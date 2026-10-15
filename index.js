@@ -16,8 +16,9 @@ const PORT = process.env.PORT || 3000;
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-    sock = makeWASocket({
+   sock = makeWASocket({
         auth: state,
+        browser: ["Chrome (Linux)", "", ""],
         logger: pino({ level: 'silent' })
     });
 
