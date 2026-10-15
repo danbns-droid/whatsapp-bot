@@ -2,12 +2,15 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whis
 const express = require('express');
 const cors = require('cors');
 const pino = require('pino');
+const qrcode = require('qrcode');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
 let sock;
+let qrCodeData = '';
+let isConnected = false;
 const PORT = process.env.PORT || 3000;
 
 async function connectToWhatsApp() {
@@ -15,25 +18,44 @@ async function connectToWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
         logger: pino({ level: 'silent' })
     });
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            qrCodeData = await qrcode.toDataURL(qr);
+            console.log('נוצר קוד QR חדש לסריקה!');
+        }
+
         if (connection === 'close') {
+            isConnected = false;
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('החיבור נותק, מנסה להתחבר מחדש...', shouldReconnect);
             if (shouldReconnect) {
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
+            isConnected = true;
+            qrCodeData = '';
             console.log('התחברת בהצלחה לוואטסאפ!');
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 }
+
+// דף בית שמציג את סטטוס החיבור או את קוד ה-QR לסריקה
+app.get('/', (req, res) => {
+    if (isConnected) {
+        res.send('<h2>הבוט מחובר לוואטסאפ בהצלחה! 🟢</h2>');
+    } else if (qrCodeData) {
+        res.send(`<h2>סרוק את קוד ה-QR כדי להתחבר לוואטסאפ:</h2><img src="${qrCodeData}" alt="QR Code"/>`);
+    } else {
+        res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
+    }
+});
 
 app.post('/send-appointment', async (req, res) => {
     const { phone, name, date, time } = req.body;
