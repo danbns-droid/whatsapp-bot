@@ -84,10 +84,12 @@ app.post('/send-appointment', async (req, res) => {
     }
     formattedPhone += '@s.whatsapp.net';
 
-    const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\n` +
+// הוספת כתובת הסטודיו בתוך הודעת הוואטסאפ
+const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\n` +
                     `📅 תאריך: ${date}\n` +
                     `⏰ שעה: ${time}\n` +
                     `💅 שירות: ${serviceName || 'לא צוין'}\n` +
+                    `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
                     `🔑 קוד ביטול: ${appointmentId || 'לא צוין'}\n\n` +
                     `מחכים לך בסטודיו! Yulas Studio`;
 
