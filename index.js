@@ -1,5 +1,6 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
+const admin = require('firebase-admin');
 const qrcode = require('qrcode');
 const cors = require('cors');
 
@@ -11,12 +12,80 @@ let sock;
 let qrCodeData = '';
 let connectionStatus = 'DISCONNECTED';
 
-// מספר הטלפון של הסטודיו (לשם ישלחו התראות על פניות חדשות)
-// יש לוודא שהמספר בפורמט בינלאומי, לדוגמה: 972501234567@s.whatsapp.net
-const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // <-- החלף למספר הטלפון האמיתי של הסטודיו
+const STUDIO_PHONE = '972504886580@s.whatsapp.net';
 
+// 1. אתחול Firebase Admin בשרת מול המסד הקיים של הסטודיו
+if (!admin.apps.length) {
+    admin.initializeApp({
+        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+    });
+}
+const db = admin.database();
+
+// 2. מנגנון לשמירה וטעינה של מפתחות ההצפנה בתוך Firebase
+async function useFirebaseAuthState() {
+    const ref = db.ref('baileys_auth');
+
+    const readData = async (type, id) => {
+        const snapshot = await ref.child(`${type}/${id}`).once('value');
+        return snapshot.val();
+    };
+
+    const writeData = async (type, id, value) => {
+        if (value) {
+            await ref.child(`${type}/${id}`).set(value);
+        } else {
+            await ref.child(`${type}/${id}`).remove();
+        }
+    };
+
+    const snapshot = await ref.child('creds').once('value');
+    let creds = snapshot.val();
+
+    if (!creds) {
+        const { initAuthCreds } = require('@whiskeysockets/baileys');
+        creds = initAuthCreds();
+        await ref.child('creds').set(creds);
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            let value = await readData(type, id);
+                            if (type === 'app-state-sync-key' && value) {
+                                value = admin.database.BufferJSON.reviver('', value);
+                            }
+                            data[id] = value;
+                        })
+                    );
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            tasks.push(writeData(category, id, value));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: async () => {
+            await ref.child('creds').set(creds);
+        }
+    };
+}
+
+// 3. התחברות ל-WhatsApp
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { state, saveCreds } = await useFirebaseAuthState();
 
     sock = makeWASocket({
         auth: state,
@@ -51,7 +120,7 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// הצגת סטטוס השרת וקוד ה-QR בדפדפן
+// 4. הצגת קוד QR בדפדפן
 app.get('/', async (req, res) => {
     if (connectionStatus === 'CONNECTED') {
         return res.send('<h2>הבוט מחובר לוואטסאפ בהצלחה! 🟢</h2>');
@@ -70,7 +139,7 @@ app.get('/', async (req, res) => {
     res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
 });
 
-// 1. נתיב לשליחת אישור תור ללקוחה
+// 5. אישור תור ללקוחה
 app.post('/send-appointment', async (req, res) => {
     const { phone, name, date, time, serviceName, appointmentId } = req.body;
     
@@ -84,8 +153,7 @@ app.post('/send-appointment', async (req, res) => {
     }
     formattedPhone += '@s.whatsapp.net';
 
-// הוספת כתובת הסטודיו בתוך הודעת הוואטסאפ
-const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\n` +
+    const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\n` +
                     `📅 תאריך: ${date}\n` +
                     `⏰ שעה: ${time}\n` +
                     `💅 שירות: ${serviceName || 'לא צוין'}\n` +
@@ -101,7 +169,7 @@ const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\
     }
 });
 
-// 2. נתיב לשליחת פנייה / צור קשר (גם ללקוחה וגם לסטודיו)
+// 6. פנייה חדשה / צור קשר
 app.post('/send-inquiry', async (req, res) => {
     const { phone, name, description } = req.body;
 
@@ -115,23 +183,18 @@ app.post('/send-inquiry', async (req, res) => {
     }
     formattedPhone += '@s.whatsapp.net';
 
-    // הודעה ללקוחה
     const clientMessage = `שלום ${name},\n` +
                           `פנייתך התקבלה בהצלחה! 📝\n\n` +
                           `תיאור הפנייה:\n"${description || 'ללא תיאור'}"\n\n` +
                           `ניצור איתך קשר בהקדם. Yulas Studio`;
 
-    // הודעה לסטודיו
     const studioMessage = `📥 פנייה חדשה התקבלה באתר Yulas Studio:\n\n` +
                           `👤 שם: ${name}\n` +
                           `📞 טלפון: ${phone}\n` +
                           `📝 תוכן הפנייה:\n${description || 'ללא תיאור'}`;
 
     try {
-        // שליחת הודעה ללקוחה
         await sock.sendMessage(formattedPhone, { text: clientMessage });
-        
-        // שליחת עותק לסטודיו
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
 
         res.status(200).json({ success: true, message: 'הפנייה נשלחה בהצלחה' });
