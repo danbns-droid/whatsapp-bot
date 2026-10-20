@@ -21,12 +21,18 @@ const firebaseApp = initializeApp({
 });
 const db = getDatabase(firebaseApp);
 
-// 2. מנגנון שמירת מפתחות ב-Firebase עם הגנה מפני קריסה
+// פונקציה לניקוי תווים אסורים בנתיבים של Firebase (כמו נקודות)
+const sanitizeKey = (key) => {
+    return key.replace(/[.#$\[\]\/]/g, '_');
+};
+
+// 2. מנגנון שמירת מפתחות ב-Firebase עם הגנה והתאמת מפתחות
 async function useFirebaseAuthState() {
     const readData = async (type, id) => {
         try {
+            const safeId = sanitizeKey(id);
             const dbRef = ref(db);
-            const snapshot = await get(child(dbRef, `baileys_auth/${type}/${id}`));
+            const snapshot = await get(child(dbRef, `baileys_auth/${type}/${safeId}`));
             return snapshot.exists() ? snapshot.val() : null;
         } catch (e) {
             return null;
@@ -35,7 +41,8 @@ async function useFirebaseAuthState() {
 
     const writeData = async (type, id, value) => {
         try {
-            const itemRef = ref(db, `baileys_auth/${type}/${id}`);
+            const safeId = sanitizeKey(id);
+            const itemRef = ref(db, `baileys_auth/${type}/${safeId}`);
             if (value) {
                 await set(itemRef, value);
             } else {
