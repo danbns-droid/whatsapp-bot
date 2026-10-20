@@ -1,9 +1,11 @@
 const express = require('express');
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, set, remove, child } = require('firebase/database');
+const { getDatabase, ref, get, set, remove } = require('firebase/database');
 const qrcode = require('qrcode');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -14,95 +16,59 @@ let qrCodeData = '';
 let connectionStatus = 'DISCONNECTED';
 
 const STUDIO_PHONE = '972504886580@s.whatsapp.net';
+const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 
-// 1. אתחול Firebase Web SDK
+// 1. אתחול Firebase
 const firebaseApp = initializeApp({
     databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
 });
 const db = getDatabase(firebaseApp);
 
-// פונקציה לניקוי תווים אסורים בנתיבים של Firebase (כמו נקודות)
-const sanitizeKey = (key) => {
-    return key.replace(/[.#$\[\]\/]/g, '_');
-};
-
-// 2. מנגנון שמירת מפתחות ב-Firebase עם הגנה והתאמת מפתחות
-async function useFirebaseAuthState() {
-    const readData = async (type, id) => {
-        try {
-            const safeId = sanitizeKey(id);
-            const dbRef = ref(db);
-            const snapshot = await get(child(dbRef, `baileys_auth/${type}/${safeId}`));
-            return snapshot.exists() ? snapshot.val() : null;
-        } catch (e) {
-            return null;
-        }
-    };
-
-    const writeData = async (type, id, value) => {
-        try {
-            const safeId = sanitizeKey(id);
-            const itemRef = ref(db, `baileys_auth/${type}/${safeId}`);
-            if (value) {
-                await set(itemRef, value);
-            } else {
-                await remove(itemRef);
-            }
-        } catch (e) {}
-    };
-
-    let creds = null;
+// פונקציות עזר לסנכרון מול Firebase
+async function restoreAuthFromFirebase() {
     try {
-        const credsSnapshot = await get(ref(db, 'baileys_auth/creds'));
-        creds = credsSnapshot.exists() ? credsSnapshot.val() : null;
-    } catch (e) {}
-
-    if (!creds) {
-        const { initAuthCreds } = require('@whiskeysockets/baileys');
-        creds = initAuthCreds();
-        try {
-            await set(ref(db, 'baileys_auth/creds'), creds);
-        } catch (e) {}
-    }
-
-    return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    await Promise.all(
-                        ids.map(async (id) => {
-                            let value = await readData(type, id);
-                            data[id] = value;
-                        })
-                    );
-                    return data;
-                },
-                set: async (data) => {
-                    const tasks = [];
-                    for (const category in data) {
-                        for (const id in data[category]) {
-                            const value = data[category][id];
-                            tasks.push(writeData(category, id, value));
-                        }
-                    }
-                    await Promise.all(tasks);
-                }
-            }
-        },
-        saveCreds: async () => {
-            try {
-                await set(ref(db, 'baileys_auth/creds'), creds);
-            } catch (e) {}
+        if (!fs.existsSync(AUTH_DIR)) {
+            fs.mkdirSync(AUTH_DIR, { recursive: true });
         }
-    };
+        const snapshot = await get(ref(db, 'baileys_session_backup'));
+        if (snapshot.exists()) {
+            const files = snapshot.val();
+            for (const [filename, contentBase64] of Object.entries(files)) {
+                const filePath = path.join(AUTH_DIR, filename.replace(/_/g, '.'));
+                fs.writeFileSync(filePath, Buffer.from(contentBase64, 'base64'));
+            }
+            console.log('Session successfully restored from Firebase!');
+        }
+    } catch (err) {
+        console.log('Error restoring session from Firebase:', err.message);
+    }
 }
 
-// 3. התחברות ל-WhatsApp עם הגדרות יציבות
+async function backupAuthToFirebase() {
+    try {
+        if (!fs.existsSync(AUTH_DIR)) return;
+        const files = fs.readdirSync(AUTH_DIR);
+        const backupData = {};
+        for (const file of files) {
+            const filePath = path.join(AUTH_DIR, file);
+            if (fs.statSync(filePath).isFile()) {
+                const safeKey = file.replace(/\./g, '_');
+                backupData[safeKey] = fs.readFileSync(filePath).toString('base64');
+            }
+        }
+        await set(ref(db, 'baileys_session_backup'), backupData);
+        console.log('Session successfully backed up to Firebase!');
+    } catch (err) {
+        console.log('Error backing up session to Firebase:', err.message);
+    }
+}
+
+// 2. התחברות ל-WhatsApp עם הגנה נגד שגיאה 515
 async function connectToWhatsApp() {
     try {
-        const { state, saveCreds } = await useFirebaseAuthState();
+        await restoreAuthFromFirebase();
+
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
         sock = makeWASocket({
             auth: state,
@@ -110,7 +76,11 @@ async function connectToWhatsApp() {
             browser: ['Yulas Studio Bot', 'Chrome', '10.0.0'],
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 10000
+            keepAliveIntervalMs: 10000,
+            markOnlineOnConnect: false, // מונע את שגיאת 515 בשלב החיבור
+            getMessage: async (key) => {
+                return { conversation: 'Yulas Studio' };
+            }
         });
 
         sock.ev.on('connection.update', async (update) => {
@@ -123,9 +93,18 @@ async function connectToWhatsApp() {
             }
 
             if (connection === 'close') {
-                const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = (statusCode !== DisconnectReason.loggedOut);
                 connectionStatus = 'DISCONNECTED';
                 console.log('Connection closed. Reconnecting:', shouldReconnect);
+                
+                if (statusCode === DisconnectReason.loggedOut) {
+                    if (fs.existsSync(AUTH_DIR)) {
+                        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                    }
+                    await remove(ref(db, 'baileys_session_backup'));
+                }
+
                 if (shouldReconnect) {
                     setTimeout(connectToWhatsApp, 3000);
                 }
@@ -133,10 +112,15 @@ async function connectToWhatsApp() {
                 connectionStatus = 'CONNECTED';
                 qrCodeData = '';
                 console.log('WhatsApp connected successfully!');
+                await backupAuthToFirebase();
             }
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', async () => {
+            await saveCreds();
+            await backupAuthToFirebase();
+        });
+
     } catch (err) {
         console.log('Connection error:', err);
         setTimeout(connectToWhatsApp, 5000);
@@ -145,7 +129,7 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// 4. הצגת קוד QR בדפדפן
+// 3. הצגת קוד QR בדפדפן
 app.get('/', async (req, res) => {
     if (connectionStatus === 'CONNECTED') {
         return res.send('<h2>הבוט מחובר לוואטסאפ בהצלחה! 🟢</h2>');
@@ -164,7 +148,7 @@ app.get('/', async (req, res) => {
     res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
 });
 
-// 5. אישור תור ללקוחה
+// 4. אישור תור ללקוחה
 app.post('/send-appointment', async (req, res) => {
     const { phone, name, date, time, serviceName, appointmentId } = req.body;
     
@@ -194,7 +178,7 @@ app.post('/send-appointment', async (req, res) => {
     }
 });
 
-// 6. פנייה חדשה / צור קשר
+// 5. פנייה חדשה / צור קשר
 app.post('/send-inquiry', async (req, res) => {
     const { phone, name, description } = req.body;
 
