@@ -1,6 +1,7 @@
 const express = require('express');
 const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
-const admin = require('firebase-admin');
+const { initializeApp } = require('firebase/app');
+const { getDatabase, ref, get, set, remove, child } = require('firebase/database');
 const qrcode = require('qrcode');
 const cors = require('cors');
 
@@ -14,38 +15,36 @@ let connectionStatus = 'DISCONNECTED';
 
 const STUDIO_PHONE = '972504886580@s.whatsapp.net';
 
-// 1. אתחול Firebase Admin בשרת מול המסד הקיים של הסטודיו
-if (!admin.apps.length) {
-    admin.initializeApp({
-        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    });
-}
-const db = admin.database();
+// 1. אתחול Firebase Web SDK
+const firebaseApp = initializeApp({
+    databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+});
+const db = getDatabase(firebaseApp);
 
-// 2. מנגנון לשמירה וטעינה של מפתחות ההצפנה בתוך Firebase
+// 2. מנגנון שמירת מפתחות ב-Firebase
 async function useFirebaseAuthState() {
-    const ref = db.ref('baileys_auth');
-
     const readData = async (type, id) => {
-        const snapshot = await ref.child(`${type}/${id}`).once('value');
-        return snapshot.val();
+        const dbRef = ref(db);
+        const snapshot = await get(child(dbRef, `baileys_auth/${type}/${id}`));
+        return snapshot.exists() ? snapshot.val() : null;
     };
 
     const writeData = async (type, id, value) => {
+        const itemRef = ref(db, `baileys_auth/${type}/${id}`);
         if (value) {
-            await ref.child(`${type}/${id}`).set(value);
+            await set(itemRef, value);
         } else {
-            await ref.child(`${type}/${id}`).remove();
+            await remove(itemRef);
         }
     };
 
-    const snapshot = await ref.child('creds').once('value');
-    let creds = snapshot.val();
+    const credsSnapshot = await get(ref(db, 'baileys_auth/creds'));
+    let creds = credsSnapshot.exists() ? credsSnapshot.val() : null;
 
     if (!creds) {
         const { initAuthCreds } = require('@whiskeysockets/baileys');
         creds = initAuthCreds();
-        await ref.child('creds').set(creds);
+        await set(ref(db, 'baileys_auth/creds'), creds);
     }
 
     return {
@@ -57,9 +56,6 @@ async function useFirebaseAuthState() {
                     await Promise.all(
                         ids.map(async (id) => {
                             let value = await readData(type, id);
-                            if (type === 'app-state-sync-key' && value) {
-                                value = admin.database.BufferJSON.reviver('', value);
-                            }
                             data[id] = value;
                         })
                     );
@@ -78,7 +74,7 @@ async function useFirebaseAuthState() {
             }
         },
         saveCreds: async () => {
-            await ref.child('creds').set(creds);
+            await set(ref(db, 'baileys_auth/creds'), creds);
         }
     };
 }
@@ -199,7 +195,7 @@ app.post('/send-inquiry', async (req, res) => {
 
         res.status(200).json({ success: true, message: 'הפנייה נשלחה בהצלחה' });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, id: error.message });
     }
 });
 
