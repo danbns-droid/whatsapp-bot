@@ -92,14 +92,18 @@ async function useFirebaseAuthState() {
     };
 }
 
-// 3. התחברות ל-WhatsApp
+// 3. התחברות ל-WhatsApp עם הגדרות יציבות
 async function connectToWhatsApp() {
     try {
         const { state, saveCreds } = await useFirebaseAuthState();
 
         sock = makeWASocket({
             auth: state,
-            printQRInTerminal: true
+            printQRInTerminal: true,
+            browser: ['Yulas Studio Bot', 'Chrome', '10.0.0'],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 10000
         });
 
         sock.ev.on('connection.update', async (update) => {
