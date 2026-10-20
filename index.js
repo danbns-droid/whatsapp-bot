@@ -21,30 +21,41 @@ const firebaseApp = initializeApp({
 });
 const db = getDatabase(firebaseApp);
 
-// 2. מנגנון שמירת מפתחות ב-Firebase
+// 2. מנגנון שמירת מפתחות ב-Firebase עם הגנה מפני קריסה
 async function useFirebaseAuthState() {
     const readData = async (type, id) => {
-        const dbRef = ref(db);
-        const snapshot = await get(child(dbRef, `baileys_auth/${type}/${id}`));
-        return snapshot.exists() ? snapshot.val() : null;
-    };
-
-    const writeData = async (type, id, value) => {
-        const itemRef = ref(db, `baileys_auth/${type}/${id}`);
-        if (value) {
-            await set(itemRef, value);
-        } else {
-            await remove(itemRef);
+        try {
+            const dbRef = ref(db);
+            const snapshot = await get(child(dbRef, `baileys_auth/${type}/${id}`));
+            return snapshot.exists() ? snapshot.val() : null;
+        } catch (e) {
+            return null;
         }
     };
 
-    const credsSnapshot = await get(ref(db, 'baileys_auth/creds'));
-    let creds = credsSnapshot.exists() ? credsSnapshot.val() : null;
+    const writeData = async (type, id, value) => {
+        try {
+            const itemRef = ref(db, `baileys_auth/${type}/${id}`);
+            if (value) {
+                await set(itemRef, value);
+            } else {
+                await remove(itemRef);
+            }
+        } catch (e) {}
+    };
+
+    let creds = null;
+    try {
+        const credsSnapshot = await get(ref(db, 'baileys_auth/creds'));
+        creds = credsSnapshot.exists() ? credsSnapshot.val() : null;
+    } catch (e) {}
 
     if (!creds) {
         const { initAuthCreds } = require('@whiskeysockets/baileys');
         creds = initAuthCreds();
-        await set(ref(db, 'baileys_auth/creds'), creds);
+        try {
+            await set(ref(db, 'baileys_auth/creds'), creds);
+        } catch (e) {}
     }
 
     return {
@@ -74,44 +85,51 @@ async function useFirebaseAuthState() {
             }
         },
         saveCreds: async () => {
-            await set(ref(db, 'baileys_auth/creds'), creds);
+            try {
+                await set(ref(db, 'baileys_auth/creds'), creds);
+            } catch (e) {}
         }
     };
 }
 
 // 3. התחברות ל-WhatsApp
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useFirebaseAuthState();
+    try {
+        const { state, saveCreds } = await useFirebaseAuthState();
 
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true
-    });
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: true
+        });
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
-            qrCodeData = qr;
-            connectionStatus = 'QR_READY';
-            console.log('New QR code received.');
-        }
-
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            connectionStatus = 'DISCONNECTED';
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
-            if (shouldReconnect) {
-                connectToWhatsApp();
+            if (qr) {
+                qrCodeData = qr;
+                connectionStatus = 'QR_READY';
+                console.log('New QR code received.');
             }
-        } else if (connection === 'open') {
-            connectionStatus = 'CONNECTED';
-            qrCodeData = '';
-            console.log('WhatsApp connected successfully!');
-        }
-    });
 
-    sock.ev.on('creds.update', saveCreds);
+            if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
+                connectionStatus = 'DISCONNECTED';
+                console.log('Connection closed. Reconnecting:', shouldReconnect);
+                if (shouldReconnect) {
+                    setTimeout(connectToWhatsApp, 3000);
+                }
+            } else if (connection === 'open') {
+                connectionStatus = 'CONNECTED';
+                qrCodeData = '';
+                console.log('WhatsApp connected successfully!');
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+    } catch (err) {
+        console.log('Connection error:', err);
+        setTimeout(connectToWhatsApp, 5000);
+    }
 }
 
 connectToWhatsApp();
@@ -195,7 +213,7 @@ app.post('/send-inquiry', async (req, res) => {
 
         res.status(200).json({ success: true, message: 'הפנייה נשלחה בהצלחה' });
     } catch (error) {
-        res.status(500).json({ success: false, id: error.message });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
