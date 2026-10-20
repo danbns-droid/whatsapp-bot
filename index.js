@@ -63,7 +63,71 @@ async function backupAuthToFirebase() {
     }
 }
 
-// 2. התחברות ל-WhatsApp עם הגנה נגד שגיאה 515
+// 2. פונקציית בדיקת תזכורות יומית שרצה כל 30 דקות
+let lastReminderDate = '';
+
+async function checkAndSendDailyReminders() {
+    if (connectionStatus !== 'CONNECTED' || !sock) return;
+
+    const now = new Date();
+    const israelDateStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' }); // פורמט YYYY-MM-DD
+    const israelTimeStr = now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Jerusalem', hour12: false }); // פורמט HH:MM:SS
+    const [hour] = israelTimeStr.split(':');
+    const currentHour = parseInt(hour, 10);
+
+    // בדיקה החל מהשעה 08:00 בבוקר וכל עוד לא נשלחו תזכורות עבור היום הנוכחי
+    if (currentHour >= 8 && lastReminderDate !== israelDateStr) {
+        lastReminderDate = israelDateStr;
+        console.log(`Running daily reminder check for date: ${israelDateStr}`);
+
+        try {
+            const appointmentsRef = ref(db, 'yulas_data/appointments');
+            const snapshot = await get(appointmentsRef);
+            
+            if (!snapshot.exists()) return;
+
+            const appointments = snapshot.val();
+            for (const key in appointments) {
+                const appt = appointments[key];
+                
+                // בדיקה אם התור הוא להיום והאם טרם נשלחה אליו תזכורת
+                if (appt && appt.date === israelDateStr && !appt.reminderSent) {
+                    let phone = appt.phone;
+                    if (!phone) continue;
+
+                    let formattedPhone = phone.replace(/\D/g, '');
+                    if (formattedPhone.startsWith('0')) {
+                        formattedPhone = '972' + formattedPhone.substring(1);
+                    }
+                    formattedPhone += '@s.whatsapp.net';
+
+                    const reminderMessage = `שלום ${appt.name || 'לקוחה יקרה'},\n` +
+                                            `זוהי תזכורת לתור שנקבע להיום בשעה: ${appt.time} ✨\n\n` +
+                                            `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
+                                            `🔑 קוד ביטול: ${appt.appointmentId || 'לא צוין'}\n\n` +
+                                            `מחכים לך בסטודיו! Yulas Studio`;
+
+                    try {
+                        await sock.sendMessage(formattedPhone, { text: reminderMessage });
+                        console.log(`Daily reminder sent successfully to ${formattedPhone}`);
+                        
+                        // סימון ב-Firebase שהתזכורת נשלחה כדי לא לכפול
+                        await set(ref(db, `yulas_data/appointments/${key}/reminderSent`), true);
+                    } catch (err) {
+                        console.log(`Failed to send reminder to ${formattedPhone}:`, err.message);
+                    }
+                }
+            }
+        } catch (err) {
+            console.log('Error checking appointments for reminders:', err.message);
+        }
+    }
+}
+
+// הפעלת הבדיקה כל 30 דקות (30 * 60 * 1000 מילישניות)
+setInterval(checkAndSendDailyReminders, 30 * 60 * 1000);
+
+// 3. התחברות ל-WhatsApp
 async function connectToWhatsApp() {
     try {
         await restoreAuthFromFirebase();
@@ -77,7 +141,7 @@ async function connectToWhatsApp() {
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 10000,
-            markOnlineOnConnect: false, // מונע את שגיאת 515 בשלב החיבור
+            markOnlineOnConnect: false,
             getMessage: async (key) => {
                 return { conversation: 'Yulas Studio' };
             }
@@ -129,7 +193,7 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// 3. הצגת קוד QR בדפדפן
+// 4. הצגת קוד QR בדפדפן
 app.get('/', async (req, res) => {
     if (connectionStatus === 'CONNECTED') {
         return res.send('<h2>הבוט מחובר לוואטסאפ בהצלחה! 🟢</h2>');
@@ -148,7 +212,7 @@ app.get('/', async (req, res) => {
     res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
 });
 
-// 4. אישור תור ללקוחה
+// 5. אישור תור ללקוחה
 app.post('/send-appointment', async (req, res) => {
     const { phone, name, date, time, serviceName, appointmentId } = req.body;
     
@@ -178,7 +242,7 @@ app.post('/send-appointment', async (req, res) => {
     }
 });
 
-// 5. פנייה חדשה / צור קשר
+// 6. פנייה חדשה / צור קשר
 app.post('/send-inquiry', async (req, res) => {
     const { phone, name, description } = req.body;
 
