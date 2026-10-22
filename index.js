@@ -24,13 +24,13 @@ const firebaseApp = initializeApp({
 });
 const db = getDatabase(firebaseApp);
 
-// פונקציות עזר לסנכרון מול Firebase
+// פונקציות עזר לסנכרון מול Firebase תחת yulas_data
 async function restoreAuthFromFirebase() {
     try {
         if (!fs.existsSync(AUTH_DIR)) {
             fs.mkdirSync(AUTH_DIR, { recursive: true });
         }
-        const snapshot = await get(ref(db, 'baileys_session_backup'));
+        const snapshot = await get(ref(db, 'yulas_data/baileys_session_backup'));
         if (snapshot.exists()) {
             const files = snapshot.val();
             for (const [filename, contentBase64] of Object.entries(files)) {
@@ -56,7 +56,7 @@ async function backupAuthToFirebase() {
                 backupData[safeKey] = fs.readFileSync(filePath).toString('base64');
             }
         }
-        await set(ref(db, 'baileys_session_backup'), backupData);
+        await set(ref(db, 'yulas_data/baileys_session_backup'), backupData);
         console.log('Session successfully backed up to Firebase!');
     } catch (err) {
         console.log('Error backing up session to Firebase:', err.message);
@@ -167,7 +167,7 @@ async function connectToWhatsApp() {
                     if (fs.existsSync(AUTH_DIR)) {
                         fs.rmSync(AUTH_DIR, { recursive: true, force: true });
                     }
-                    await remove(ref(db, 'baileys_session_backup'));
+                    await remove(ref(db, 'yulas_data/baileys_session_backup'));
                 }
 
                 if (shouldReconnect) {
