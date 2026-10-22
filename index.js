@@ -75,8 +75,8 @@ async function checkAndSendDailyReminders() {
     const [hour] = israelTimeStr.split(':');
     const currentHour = parseInt(hour, 10);
 
-    // בדיקה החל מהשעה 08:00 בבוקר וכל עוד לא נשלחו תזכורות עבור היום הנוכחי
-    if (currentHour >= 8 && lastReminderDate !== israelDateStr) {
+    // בדיקה אך ורק בחלון השעות 08:00 עד 10:00 בבוקר
+    if (currentHour >= 8 && currentHour < 10 && lastReminderDate !== israelDateStr) {
         lastReminderDate = israelDateStr;
         console.log(`Running daily reminder check for date: ${israelDateStr}`);
 
@@ -242,8 +242,10 @@ app.post('/send-appointment', async (req, res) => {
 
     try {
         await sock.sendMessage(formattedPhone, { text: message });
+        console.log(`Appointment confirmation sent successfully to ${formattedPhone}`);
         res.status(200).json({ success: true, message: 'הודעת תור נשלחה בהצלחה' });
     } catch (error) {
+        console.log(`Failed to send appointment confirmation to ${formattedPhone}:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -275,9 +277,11 @@ app.post('/send-inquiry', async (req, res) => {
     try {
         await sock.sendMessage(formattedPhone, { text: clientMessage });
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        console.log(`Inquiry message sent successfully to ${formattedPhone}`);
 
         res.status(200).json({ success: true, message: 'הפנייה נשלחה בהצלחה' });
     } catch (error) {
+        console.log(`Failed to send inquiry to ${formattedPhone}:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
