@@ -70,8 +70,8 @@ async function checkAndSendDailyReminders() {
     if (connectionStatus !== 'CONNECTED' || !sock) return;
 
     const now = new Date();
-    const israelDateStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' }); // פורמט YYYY-MM-DD
-    const israelTimeStr = now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Jerusalem', hour12: false }); // פורמט HH:MM:SS
+    const israelDateStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' }); // YYYY-MM-DD
+    const israelTimeStr = now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Jerusalem', hour12: false }); // HH:MM:SS
     const [hour] = israelTimeStr.split(':');
     const currentHour = parseInt(hour, 10);
 
@@ -102,16 +102,17 @@ async function checkAndSendDailyReminders() {
                     formattedPhone += '@s.whatsapp.net';
 
                     const reminderMessage = `שלום ${appt.name || 'לקוחה יקרה'},\n` +
-                                            `זוהי תזכורת לתור שנקבע להיום בשעה: ${appt.time} ✨\n\n` +
+                                            `זוהי תזכורת לתור שנקבע להיום בשעה: ${appt.time} ✨\n` +
+                                            `📅 תאריך: ${appt.date}\n` +
                                             `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
-                                            `🔑 קוד ביטול: ${appt.appointmentId || 'לא צוין'}\n\n` +
+                                            `🔑 קוד ביטול: ${appt.appointmentId || 'לא צוין'}\n` +
                                             `מחכים לך בסטודיו! Yulas Studio`;
 
                     try {
                         await sock.sendMessage(formattedPhone, { text: reminderMessage });
                         console.log(`Daily reminder sent successfully to ${formattedPhone}`);
                         
-                        // סימון ב-Firebase שהתזכורת נשלחה כדי לא לכפול
+                        // סימון ב-Firebase שהתזכורת נשלחה
                         await set(ref(db, `yulas_data/appointments/${key}/reminderSent`), true);
                     } catch (err) {
                         console.log(`Failed to send reminder to ${formattedPhone}:`, err.message);
@@ -124,7 +125,7 @@ async function checkAndSendDailyReminders() {
     }
 }
 
-// הפעלת הבדיקה כל 30 דקות (30 * 60 * 1000 מילישניות)
+// הפעלת הבדיקה כל 30 דקות
 setInterval(checkAndSendDailyReminders, 30 * 60 * 1000);
 
 // 3. התחברות ל-WhatsApp
@@ -212,9 +213,9 @@ app.get('/', async (req, res) => {
     res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
 });
 
-// 5. אישור תור ללקוחה
+// 5. אישור תור ללקוחה (כולל תמיכה בהערה)
 app.post('/send-appointment', async (req, res) => {
-    const { phone, name, date, time, serviceName, appointmentId } = req.body;
+    const { phone, name, date, time, serviceName, appointmentId, note } = req.body;
     
     if (!phone) {
         return res.status(400).json({ success: false, error: 'מספר טלפון חסר' });
@@ -226,13 +227,18 @@ app.post('/send-appointment', async (req, res) => {
     }
     formattedPhone += '@s.whatsapp.net';
 
-    const message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n\n` +
-                    `📅 תאריך: ${date}\n` +
-                    `⏰ שעה: ${time}\n` +
-                    `💅 שירות: ${serviceName || 'לא צוין'}\n` +
-                    `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
-                    `🔑 קוד ביטול: ${appointmentId || 'לא צוין'}\n\n` +
-                    `מחכים לך בסטודיו! Yulas Studio`;
+    let message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n` +
+                  `📅 תאריך: ${date}\n` +
+                  `⏰ שעה: ${time}\n` +
+                  `💅 שירות: ${serviceName || 'לא צוין'}\n` +
+                  `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
+                  `🔑 קוד ביטול: ${appointmentId || 'לא צוין'}\n`;
+
+    if (note) {
+        message += `💬 הערה: ${note}\n`;
+    }
+
+    message += `מחכים לך בסטודיו! Yulas Studio`;
 
     try {
         await sock.sendMessage(formattedPhone, { text: message });
@@ -257,11 +263,11 @@ app.post('/send-inquiry', async (req, res) => {
     formattedPhone += '@s.whatsapp.net';
 
     const clientMessage = `שלום ${name},\n` +
-                          `פנייתך התקבלה בהצלחה! 📝\n\n` +
-                          `תיאור הפנייה:\n"${description || 'ללא תיאור'}"\n\n` +
+                          `פנייתך התקבלה בהצלחה! 📝\n` +
+                          `תיאור הפנייה: "${description || 'ללא תיאור'}"\n` +
                           `ניצור איתך קשר בהקדם. Yulas Studio`;
 
-    const studioMessage = `📥 פנייה חדשה התקבלה באתר Yulas Studio:\n\n` +
+    const studioMessage = `📥 פנייה חדשה התקבלה באתר Yulas Studio:\n` +
                           `👤 שם: ${name}\n` +
                           `📞 טלפון: ${phone}\n` +
                           `📝 תוכן הפנייה:\n${description || 'ללא תיאור'}`;
