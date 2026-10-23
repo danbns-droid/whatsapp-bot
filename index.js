@@ -63,7 +63,7 @@ async function backupAuthToFirebase() {
     }
 }
 
-// 2. פונקציית בדיקת תזכורות יומית שרצה כל 30 דקות
+// 2. פונקציית בדיקת תזכורות יומית שרצה כל 30 דקות (חלון 08:00 עד 10:00 בבוקר בלבד)
 let lastReminderDate = '';
 
 async function checkAndSendDailyReminders() {
@@ -75,7 +75,6 @@ async function checkAndSendDailyReminders() {
     const [hour] = israelTimeStr.split(':');
     const currentHour = parseInt(hour, 10);
 
-    // בדיקה אך ורק בחלון השעות 08:00 עד 10:00 בבוקר
     if (currentHour >= 8 && currentHour < 10 && lastReminderDate !== israelDateStr) {
         lastReminderDate = israelDateStr;
         console.log(`Running daily reminder check for date: ${israelDateStr}`);
@@ -90,7 +89,6 @@ async function checkAndSendDailyReminders() {
             for (const key in appointments) {
                 const appt = appointments[key];
                 
-                // בדיקה אם התור הוא להיום והאם טרם נשלחה אליו תזכורת
                 if (appt && appt.date === israelDateStr && !appt.reminderSent) {
                     let phone = appt.phone;
                     if (!phone) continue;
@@ -111,8 +109,6 @@ async function checkAndSendDailyReminders() {
                     try {
                         await sock.sendMessage(formattedPhone, { text: reminderMessage });
                         console.log(`Daily reminder sent successfully to ${formattedPhone}`);
-                        
-                        // סימון ב-Firebase שהתזכורת נשלחה
                         await set(ref(db, `yulas_data/appointments/${key}/reminderSent`), true);
                     } catch (err) {
                         console.log(`Failed to send reminder to ${formattedPhone}:`, err.message);
@@ -125,7 +121,6 @@ async function checkAndSendDailyReminders() {
     }
 }
 
-// הפעלת הבדיקה כל 30 דקות
 setInterval(checkAndSendDailyReminders, 30 * 60 * 1000);
 
 // 3. התחברות ל-WhatsApp
@@ -143,8 +138,9 @@ async function connectToWhatsApp() {
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 10000,
             markOnlineOnConnect: false,
+            // תיקון: מחזיר אובייקט ריק כדי למנוע דריסת טקסטים בהיסטוריית וואטסאפ
             getMessage: async (key) => {
-                return { conversation: 'Yulas Studio' };
+                return { conversation: '' };
             }
         });
 
@@ -213,7 +209,7 @@ app.get('/', async (req, res) => {
     res.send('<h2>מייצר קוד QR, רענן את העמוד עוד כמה שניות...</h2>');
 });
 
-// 5. אישור תור ללקוחה (כולל תמיכה בהערה)
+// 5. אישור תור ללקוחה + שליחת הודעה מפורטת
 app.post('/send-appointment', async (req, res) => {
     const { phone, name, date, time, serviceName, appointmentId, note } = req.body;
     
@@ -227,21 +223,21 @@ app.post('/send-appointment', async (req, res) => {
     }
     formattedPhone += '@s.whatsapp.net';
 
-    let message = `שלום ${name}, התור שלך נקבע בהצלחה! ✨\n` +
-                  `📅 תאריך: ${date}\n` +
-                  `⏰ שעה: ${time}\n` +
-                  `💅 שירות: ${serviceName || 'לא צוין'}\n` +
-                  `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
-                  `🔑 קוד ביטול: ${appointmentId || 'לא צוין'}\n`;
+    let clientMessage = `שלום ${name || 'לקוחה יקרה'}, התור שלך נקבע בהצלחה! ✨\n` +
+                        `📅 תאריך: ${date || 'לא צוין'}\n` +
+                        `⏰ שעה: ${time || 'לא צוין'}\n` +
+                        `💅 שירות: ${serviceName || 'לא צוין'}\n` +
+                        `📍 כתובת הסטודיו: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה)\n` +
+                        `🔑 קוד ביטול: ${appointmentId || 'לא צוין'}\n`;
 
     if (note) {
-        message += `💬 הערה: ${note}\n`;
+        clientMessage += `💬 הערה: ${note}\n`;
     }
 
-    message += `מחכים לך בסטודיו! Yulas Studio`;
+    clientMessage += `מחכים לך בסטודיו! Yulas Studio`;
 
     try {
-        await sock.sendMessage(formattedPhone, { text: message });
+        await sock.sendMessage(formattedPhone, { text: clientMessage });
         console.log(`Appointment confirmation sent successfully to ${formattedPhone}`);
         res.status(200).json({ success: true, message: 'הודעת תור נשלחה בהצלחה' });
     } catch (error) {
