@@ -5,20 +5,24 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול Firebase Admin לשרת
-if (fs.existsSync('./serviceAccountKey.json')) {
-    const serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json', 'utf8'));
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    });
-} else {
-    admin.initializeApp({
-        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    });
+// אתחול Firebase Admin לשרת בצורה בטוחה שלא מפילה את השרת
+try {
+    if (fs.existsSync('./serviceAccountKey.json')) {
+        const serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json', 'utf8'));
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+        });
+    } else {
+        admin.initializeApp({
+            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+        });
+    }
+} catch (e) {
+    console.log("Firebase init warning:", e.message);
 }
 
-const db = admin.database();
+const db = admin.database ? admin.database() : null;
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -29,6 +33,7 @@ const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ
 let sock;
 
 async function restoreSessionFromFirebase() {
+    if (!db) return;
     try {
         const snapshot = await db.ref('whatsapp_session').once('value');
         const sessionData = snapshot.val();
@@ -42,11 +47,12 @@ async function restoreSessionFromFirebase() {
             console.log("Session successfully restored from Firebase!");
         }
     } catch (error) {
-        console.error("Failed to restore session from Firebase:", error);
+        console.error("Failed to restore session from Firebase (Continuing locally):", error.message);
     }
 }
 
 async function backupSessionToFirebase() {
+    if (!db) return;
     try {
         if (!fs.existsSync('./auth_info_baileys')) return;
         const files = fs.readdirSync('./auth_info_baileys');
@@ -58,12 +64,14 @@ async function backupSessionToFirebase() {
         await db.ref('whatsapp_session').set(sessionData);
         console.log("Session successfully backed up to Firebase!");
     } catch (error) {
-        console.error("Failed to backup session to Firebase:", error);
+        console.error("Failed to backup session to Firebase:", error.message);
     }
 }
 
 async function connectToWhatsApp() {
+    // ננסה לשחזר מפירובייס אך לא נעצור את העלייה אם זה נכשל
     await restoreSessionFromFirebase();
+    
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     sock = makeWASocket({
@@ -80,7 +88,7 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'open') {
-            console.log('WhatsApp connected successfully!');
+            console.log('WhatsApp connected successfully! 🚀');
         } else if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
