@@ -3,10 +3,9 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import admin from 'firebase-admin';
-
-// אתחול Firebase Admin לשרת (לניהול הסשן וגיבוי הענן)
-// ודא שקובץ ה-JSON של מפתח השירות מוגדר תחת serviceAccountKey.json או משתני סביבה
 import fs from 'fs';
+
+// אתחול Firebase Admin לשרת
 if (fs.existsSync('./serviceAccountKey.json')) {
     const serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json', 'utf8'));
     admin.initializeApp({
@@ -73,7 +72,7 @@ async function connectToWhatsApp() {
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"]
     });
 
-    sock.udarstven.on('creds.update', async () => {
+    sock.ev.on('creds.update', async () => {
         await saveCreds();
         await backupSessionToFirebase();
     });
@@ -94,6 +93,10 @@ async function connectToWhatsApp() {
 
 // נקודת קצה לשליחת אישור תור ללקוחה ועדכון לסטודיו
 app.post('/send-appointment', async (req, res) => {
+    if (!sock) {
+        return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
+    }
+
     const { phone, name, date, time, serviceName, appointmentId, note } = req.body;
     
     if (!phone) {
@@ -139,6 +142,10 @@ app.post('/send-appointment', async (req, res) => {
 
 // נקודת קצה לשליחת הודעת צור קשר / פנייה לסטודיו
 app.post('/send-inquiry', async (req, res) => {
+    if (!sock) {
+        return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
+    }
+
     const { phone, name, description } = req.body;
 
     let studioMessage = `✉️ *פנייה חדשה התקבלה מהאתר!* ✉️\n\n` +
@@ -155,7 +162,7 @@ app.post('/send-inquiry', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     connectToWhatsApp();
