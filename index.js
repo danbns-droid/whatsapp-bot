@@ -5,11 +5,11 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול Firebase Admin בצורה נקייה וישירה
+// אתחול Firebase Admin בצורה נקייה ומפורשת ללא חיפוש מפתחות אוטומטי
 try {
     admin.initializeApp({
         databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    });
+    }, undefined);
     console.log("Firebase initialized successfully!");
 } catch (e) {
     console.log("Firebase init warning:", e.message);
