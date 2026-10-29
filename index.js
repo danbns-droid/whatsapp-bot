@@ -1,3 +1,5 @@
+process.env.GOOGLE_APPLICATION_CREDENTIALS = "";
+
 import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import express from 'express';
 import cors from 'cors';
@@ -5,7 +7,7 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול נקי לחלוטין ללא שום אובייקט אימות
+// אתחול נקי לחלוטין ללא שום אובייקט אימות או חיפוש מפתחות
 try {
     if (!admin.apps.length) {
         admin.initializeApp({
