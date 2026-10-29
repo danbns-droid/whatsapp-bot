@@ -1,31 +1,9 @@
-process.env.GOOGLE_APPLICATION_CREDENTIALS = "";
-
 import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
-import admin from 'firebase-admin';
+import https from 'https';
 import fs from 'fs';
-
-// אתחול נקי לחלוטין ללא שום אובייקט אימות או חיפוש מפתחות
-try {
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-        });
-    }
-    console.log("Firebase initialized cleanly!");
-} catch (e) {
-    console.log("Firebase init error:", e.message);
-}
-
-// הגנה מלאה על חיבור הדאטה-בייס
-let db = null;
-try {
-    db = admin.database();
-} catch (e) {
-    console.log("Database connection warning:", e.message);
-}
 
 const app = express();
 app.use(cors());
@@ -33,30 +11,41 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ של הסטודיו
+const FIREBASE_DB_URL = "https://yulas-studio-default-rtdb.firebaseio.com";
 
 let sock;
 
+// פונקציות עזר לשמירה ושחזור סשן מול פיירבייס ב-HTTP ישיר (בלי ספריות של גוגל)
 async function restoreSessionFromFirebase() {
-    if (!db) return;
-    try {
-        const snapshot = await db.ref('whatsapp_session').once('value');
-        const sessionData = snapshot.val();
-        if (sessionData) {
-            if (!fs.existsSync('./auth_info_baileys')) {
-                fs.mkdirSync('./auth_info_baileys');
-            }
-            for (let key in sessionData) {
-                fs.writeFileSync(`./auth_info_baileys/${key}`, sessionData[key]);
-            }
-            console.log("Session successfully restored from Firebase!");
-        }
-    } catch (error) {
-        console.error("Failed to restore session from Firebase (Continuing locally):", error.message);
-    }
+    return new Promise((resolve) => {
+        https.get(`${FIREBASE_DB_URL}/whatsapp_session.json`, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const sessionData = JSON.parse(data);
+                    if (sessionData) {
+                        if (!fs.existsSync('./auth_info_baileys')) {
+                            fs.mkdirSync('./auth_info_baileys', { recursive: true });
+                        }
+                        for (let key in sessionData) {
+                            fs.writeFileSync(`./auth_info_baileys/${key}`, sessionData[key]);
+                        }
+                        console.log("Session successfully restored from Firebase!");
+                    }
+                } catch (e) {
+                    console.log("No remote session found or parse error.");
+                }
+                resolve();
+            });
+        }).on('error', (err) => {
+            console.error("Failed to restore session from Firebase:", err.message);
+            resolve();
+        });
+    });
 }
 
 async function backupSessionToFirebase() {
-    if (!db) return;
     try {
         if (!fs.existsSync('./auth_info_baileys')) return;
         const files = fs.readdirSync('./auth_info_baileys');
@@ -65,8 +54,28 @@ async function backupSessionToFirebase() {
             const content = fs.readFileSync(`./auth_info_baileys/${file}`, 'utf8');
             sessionData[file] = content;
         }
-        await db.ref('whatsapp_session').set(sessionData);
-        console.log("Session successfully backed up to Firebase!");
+
+        const dataString = JSON.stringify(sessionData);
+        const url = new URL(`${FIREBASE_DB_URL}/whatsapp_session.json`);
+
+        const reqOptions = {
+            hostname: url.hostname,
+            path: url.pathname,
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(dataString)
+            }
+        };
+
+        const req = https.request(reqOptions, (res) => {
+            if (res.statusCode === 200) {
+                console.log("Session successfully backed up to Firebase!");
+            }
+        });
+        req.on('error', (e) => console.error("Backup error:", e.message));
+        req.write(dataString);
+        req.end();
     } catch (error) {
         console.error("Failed to backup session to Firebase:", error.message);
     }
