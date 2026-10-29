@@ -5,27 +5,12 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול Firebase Admin בצורה בטוחה שתתקן אוטומטית תווי מעבר שורה במפתח
+// אתחול Firebase Admin בצורה נקייה וישירה
 try {
-    if (fs.existsSync('./serviceAccountKey.json')) {
-        const rawData = fs.readFileSync('./serviceAccountKey.json', 'utf8');
-        const serviceAccount = JSON.parse(rawData);
-        
-        // תיקון מוודא של תווי \n במפתח הפרטי במידה ונפגמו בקריאה
-        if (serviceAccount.private_key) {
-            serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-        }
-
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-        });
-        console.log("Firebase initialized successfully with serviceAccountKey!");
-    } else {
-        admin.initializeApp({
-            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-        });
-    }
+    admin.initializeApp({
+        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+    });
+    console.log("Firebase initialized successfully!");
 } catch (e) {
     console.log("Firebase init warning:", e.message);
 }
