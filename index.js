@@ -5,17 +5,26 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול Firebase Admin בצורה נקייה וישירה ללא שום מפתחות
+// אתחול נקי לחלוטין ללא שום אובייקט אימות
 try {
-    admin.initializeApp({
-        databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    });
-    console.log("Firebase initialized successfully!");
+    if (!admin.apps.length) {
+        admin.initializeApp({
+            databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+        });
+    }
+    console.log("Firebase initialized cleanly!");
 } catch (e) {
-    console.log("Firebase init warning:", e.message);
+    console.log("Firebase init error:", e.message);
 }
 
-const db = admin.database ? admin.database() : null;
+// הגנה מלאה על חיבור הדאטה-בייס
+let db = null;
+try {
+    db = admin.database();
+} catch (e) {
+    console.log("Database connection warning:", e.message);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
