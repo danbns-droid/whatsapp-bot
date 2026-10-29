@@ -15,10 +15,9 @@ const FIREBASE_DB_URL = "https://yulas-studio-default-rtdb.firebaseio.com";
 
 let sock;
 
-// פונקציות עזר לשמירה ושחזור סשן מול פיירבייס ב-HTTP ישיר (בלי ספריות של גוגל)
 async function restoreSessionFromFirebase() {
     return new Promise((resolve) => {
-        https.get(`${FIREBASE_DB_URL}/whatsapp_session.json`, (res) => {
+        https.get(`${FIREBASE_DB_URL}/baileys_session_backup.json`, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
@@ -56,7 +55,7 @@ async function backupSessionToFirebase() {
         }
 
         const dataString = JSON.stringify(sessionData);
-        const url = new URL(`${FIREBASE_DB_URL}/whatsapp_session.json`);
+        const url = new URL(`${FIREBASE_DB_URL}/baileys_session_backup.json`);
 
         const reqOptions = {
             hostname: url.hostname,
@@ -88,7 +87,7 @@ async function connectToWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: false,
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"]
     });
 
@@ -98,7 +97,15 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('==================================================');
+            console.log('🔑 סרוק את הקישור הבא כדי להתחבר לוואטסאפ:');
+            console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
+            console.log('==================================================');
+        }
+
         if (connection === 'open') {
             console.log('WhatsApp connected successfully! 🚀');
         } else if (connection === 'close') {
