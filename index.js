@@ -5,11 +5,11 @@ import http from 'http';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
-// אתחול Firebase Admin בצורה נקייה ומפורשת ללא חיפוש מפתחות אוטומטי
+// אתחול Firebase Admin בצורה נקייה וישירה ללא שום מפתחות
 try {
     admin.initializeApp({
         databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
-    }, undefined);
+    });
     console.log("Firebase initialized successfully!");
 } catch (e) {
     console.log("Firebase init warning:", e.message);
@@ -62,7 +62,6 @@ async function backupSessionToFirebase() {
 }
 
 async function connectToWhatsApp() {
-    // ננסה לשחזר מפירובייס אך לא נעצור את העלייה אם זה נכשל
     await restoreSessionFromFirebase();
     
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -92,7 +91,6 @@ async function connectToWhatsApp() {
     });
 }
 
-// נקודת קצה לשליחת אישור תור ללקוחה ועדכון לסטודיו
 app.post('/send-appointment', async (req, res) => {
     if (!sock) {
         return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
@@ -141,7 +139,6 @@ app.post('/send-appointment', async (req, res) => {
     }
 });
 
-// נקודת קצה לשליחת הודעת צור קשר / פנייה לסטודיו
 app.post('/send-inquiry', async (req, res) => {
     if (!sock) {
         return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
