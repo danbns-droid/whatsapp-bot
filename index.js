@@ -1,4 +1,4 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/bailejs';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -14,6 +14,7 @@ const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ
 const FIREBASE_DB_URL = "https://yulas-studio-default-rtdb.firebaseio.com";
 
 let sock;
+let latestQR = null; // משתנה לשמירת ה-QR האחרון כדי להציג בדפדפן
 
 async function restoreSessionFromFirebase() {
     return new Promise((resolve) => {
@@ -100,14 +101,13 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('==================================================');
-            console.log('🔑 סרוק את הקישור הבא כדי להתחבר לוואטסאפ:');
-            console.log(`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
-            console.log('==================================================');
+            latestQR = qr; // שומר את ה-QR כדי להציג בדפדפן
+            console.log('New QR code generated. View it at your server URL /qr');
         }
 
         if (connection === 'open') {
             console.log('WhatsApp connected successfully! 🚀');
+            latestQR = null; // מאפס ברגע שמחובר
         } else if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
@@ -117,6 +117,38 @@ async function connectToWhatsApp() {
         }
     });
 }
+
+// נתיב אינטרנט חדש לצפייה נוחה ב-QR דרך הדפדפן
+app.get('/qr', (req, res) => {
+    if (!latestQR) {
+        return res.send(`
+            <html dir="rtl">
+                <body style="font-family: Arial; text-align: center; margin-top: 50px;">
+                    <h2>הבוט כבר מחובר או שטרם נוצר קוד QR חדש.</h2>
+                    <p>נסה לרענן את העמוד בעוד מספר שניות.</p>
+                </body>
+            </html>
+        `);
+    }
+
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(latestQR)}`;
+    
+    res.send(`
+        <html dir="rtl">
+            <body style="font-family: Arial; text-align: center; margin-top: 40px; background-color: #f4f4f9;">
+                <h2>סרוק את קוד ה-QR כדי לחבר את הבוט לוואטסאפ של הסטודיו</h2>
+                <br>
+                <div style="background: white; display: inline-block; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                    <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="width: 300px; height: 300px;" />
+                </div>
+                <p style="margin-top: 20px; color: #666;">העמוד מתרענן אוטומטית כל 10 שניות כדי לספק קוד מעודכן.</p>
+                <script>
+                    setTimeout(() => { window.location.reload(); }, 10000);
+                </script>
+            </body>
+        </html>
+    `);
+});
 
 app.post('/send-appointment', async (req, res) => {
     if (!sock) {
