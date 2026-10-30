@@ -118,7 +118,7 @@ async function connectToWhatsApp() {
     });
 }
 
-// נתיב אינטרנט חדש לצפייה נוחה ב-QR דרך הדפדפן
+// נתיב אינטרנט לצפייה נוחה ב-QR דרך הדפדפן (/qr)
 app.get('/qr', (req, res) => {
     if (!latestQR) {
         return res.send(`
@@ -191,9 +191,12 @@ app.post('/send-appointment', async (req, res) => {
         await sock.sendMessage(clientJid, { text: clientMessage });
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
         
+        // תיעוד ברור בלוגים שקביעת התור עברה בהצלחה
+        console.log(`✅ Appointment notification successfully sent to client (${formattedPhone}) and studio.`);
+
         res.status(200).json({ success: true, message: 'הודעות נשלחו בהצלחה' });
     } catch (error) {
-        console.error('Failed to send appointment WhatsApp message:', error);
+        console.error('❌ Failed to send appointment WhatsApp message:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -212,9 +215,13 @@ app.post('/send-inquiry', async (req, res) => {
 
     try {
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        
+        // תיעוד פנייה חדשה בלוגים
+        console.log(`✅ New website inquiry successfully sent to studio from: ${name} (${phone})`);
+
         res.status(200).json({ success: true, message: 'פנייה נשלחה לוואטסאפ של הסטודיו' });
     } catch (error) {
-        console.error('Failed to send inquiry WhatsApp message:', error);
+        console.error('❌ Failed to send inquiry WhatsApp message:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
