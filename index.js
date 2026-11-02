@@ -89,7 +89,8 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        browser: ["Yulas Studio Bot", "Chrome", "10.0.0"]
+        browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
+        markOnlineOnConnect: true // עוזר לעדכן את המכשיר המקושר ולשמור על סנכרון התראות תקין
     });
 
     sock.ev.on('creds.update', async () => {
@@ -191,7 +192,6 @@ app.post('/send-appointment', async (req, res) => {
         await sock.sendMessage(clientJid, { text: clientMessage });
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
         
-        // תיעוד ברור בלוגים שקביעת התור עברה בהצלחה
         console.log(`✅ Appointment notification successfully sent to client (${formattedPhone}) and studio.`);
 
         res.status(200).json({ success: true, message: 'הודעות נשלחו בהצלחה' });
@@ -216,7 +216,6 @@ app.post('/send-inquiry', async (req, res) => {
     try {
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
         
-        // תיעוד פנייה חדשה בלוגים
         console.log(`✅ New website inquiry successfully sent to studio from: ${name} (${phone})`);
 
         res.status(200).json({ success: true, message: 'פנייה נשלחה לוואטסאפ של הסטודיו' });
