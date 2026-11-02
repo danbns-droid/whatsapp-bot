@@ -24,8 +24,7 @@ async function restoreSessionFromFirebase() {
             res.on('end', () => {
                 try {
                     const sessionData = JSON.parse(data);
-                    // מוודא שיש קובץ הזדהות אמיתי בגיבוי
-                    if (sessionData && sessionData['creds.json']) {
+                    if (sessionData && Object.keys(sessionData).length > 0) {
                         if (!fs.existsSync('./auth_info_baileys')) {
                             fs.mkdirSync('./auth_info_baileys', { recursive: true });
                         }
@@ -51,21 +50,9 @@ async function restoreSessionFromFirebase() {
 async function backupSessionToFirebase() {
     try {
         if (!fs.existsSync('./auth_info_baileys')) return;
-        
-        // מוודא שקובץ ה-creds קיים לפני גיבוי כדי לא לגבות סשן ריק
-        const credsPath = './auth_info_baileys/creds.json';
-        if (!fs.existsSync(credsPath)) return;
-        
-        const credsContent = fs.readFileSync(credsPath, 'utf8');
-        const credsJson = JSON.parse(credsContent);
-        
-        // מגבה רק אם המכשיר אכן רשום ומחובר
-        if (!credsJson.registered) {
-            console.log("Skipping Firebase backup: Device not registered yet.");
-            return;
-        }
-
         const files = fs.readdirSync('./auth_info_baileys');
+        if (files.length === 0) return;
+
         let sessionData = {};
         for (let file of files) {
             const content = fs.readFileSync(`./auth_info_baileys/${file}`, 'utf8');
