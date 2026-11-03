@@ -4,6 +4,7 @@ import cors from 'cors';
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(cors());
@@ -12,55 +13,61 @@ app.use(express.json());
 const server = http.createServer(app);
 const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ של הסטודיו
 const FIREBASE_DB_URL = "https://yulas-studio-default-rtdb.firebaseio.com";
+const AUTH_DIR = './auth_info_baileys';
 
 let sock;
-let latestQR = null; // משתנה לשמירת ה-QR האחרון כדי להציג בדפדפן
+let latestQR = null;
 
+// פונקציה חכמה שמשחזרת את *כל* קבצי הסשן מתיקיית הגיבוי ב-Firebase לדיסק המקומי לפני ההתחברות
 async function restoreSessionFromFirebase() {
     return new Promise((resolve) => {
-        https.get(`${FIREBASE_DB_URL}/baileys_session_backup.json`, (res) => {
+        https.get(`${FIREBASE_DB_URL}/baileys_session.json`, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
                 try {
                     const sessionData = JSON.parse(data);
                     if (sessionData && Object.keys(sessionData).length > 0) {
-                        if (!fs.existsSync('./auth_info_baileys')) {
-                            fs.mkdirSync('./auth_info_baileys', { recursive: true });
+                        if (!fs.existsSync(AUTH_DIR)) {
+                            fs.mkdirSync(AUTH_DIR, { recursive: true });
                         }
-                        for (let key in sessionData) {
-                            fs.writeFileSync(`./auth_info_baileys/${key}`, sessionData[key]);
+                        for (let fileName in sessionData) {
+                            fs.writeFileSync(path.join(AUTH_DIR, fileName), sessionData[fileName]);
                         }
-                        console.log("Session successfully restored from Firebase!");
+                        console.log("✅ Session successfully restored from Firebase!");
                     } else {
-                        console.log("No valid session found in Firebase.");
+                        console.log("ℹ️ No valid session found in Firebase.");
                     }
                 } catch (e) {
-                    console.log("No remote session found or parse error.");
+                    console.log("ℹ️ No remote session found or parse error.");
                 }
                 resolve();
             });
         }).on('error', (err) => {
-            console.error("Failed to restore session from Firebase:", err.message);
+            console.error("❌ Failed to restore session from Firebase:", err.message);
             resolve();
         });
     });
 }
 
+// פונקציה שמגבה את כל הקבצים בתיקיית הסשן המקומית ל-Firebase בצורה מלאה
 async function backupSessionToFirebase() {
     try {
-        if (!fs.existsSync('./auth_info_baileys')) return;
-        const files = fs.readdirSync('./auth_info_baileys');
+        if (!fs.existsSync(AUTH_DIR)) return;
+        const files = fs.readdirSync(AUTH_DIR);
         if (files.length === 0) return;
 
         let sessionData = {};
         for (let file of files) {
-            const content = fs.readFileSync(`./auth_info_baileys/${file}`, 'utf8');
-            sessionData[file] = content;
+            const filePath = path.join(AUTH_DIR, file);
+            // לוודא שזה קובץ ולא תיקייה פנימית
+            if (fs.statSync(filePath).isFile()) {
+                sessionData[file] = fs.readFileSync(filePath, 'utf8');
+            }
         }
 
         const dataString = JSON.stringify(sessionData);
-        const url = new URL(`${FIREBASE_DB_URL}/baileys_session_backup.json`);
+        const url = new URL(`${FIREBASE_DB_URL}/baileys_session.json`);
 
         const reqOptions = {
             hostname: url.hostname,
@@ -74,29 +81,31 @@ async function backupSessionToFirebase() {
 
         const req = https.request(reqOptions, (res) => {
             if (res.statusCode === 200) {
-                console.log("Session successfully backed up to Firebase!");
+                // שקט כדי לא להציף את הלוגים כל רגע
             }
         });
-        req.on('error', (e) => console.error("Backup error:", e.message));
+        req.on('error', (e) => console.error("❌ Backup error:", e.message));
         req.write(dataString);
         req.end();
     } catch (error) {
-        console.error("Failed to backup session to Firebase:", error.message);
+        console.error("❌ Failed to backup session to Firebase:", error.message);
     }
 }
 
 async function connectToWhatsApp() {
+    // שלב 1: שחזור הסשן מ-Firebase לפני טעינת המפתחות
     await restoreSessionFromFirebase();
     
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
-        markOnlineOnConnect: true // עוזר לעדכן את המכשיר המקושר ולשמור על סנכרון התראות תקין
+        markOnlineOnConnect: true
     });
 
+    // שלב 2: גיבוי אוטומטי מיידי בכל פעם שמפתחות ההצפנה מתעדכנים
     sock.ev.on('creds.update', async () => {
         await saveCreds();
         await backupSessionToFirebase();
@@ -106,13 +115,15 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            latestQR = qr; // שומר את ה-QR כדי להציג בדפדפן
-            console.log('New QR code generated. View it at your server URL /qr');
+            latestQR = qr;
+            console.log('📱 New QR code generated. View it at your server URL /qr');
         }
 
         if (connection === 'open') {
             console.log('WhatsApp connected successfully! 🚀');
-            latestQR = null; // מאפס ברגע שמחובר
+            latestQR = null;
+            // גיבוי יזום גם ברגע שהחיבור נפתח בהצלחה
+            backupSessionToFirebase();
         } else if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
@@ -123,7 +134,7 @@ async function connectToWhatsApp() {
     });
 }
 
-// נתיב אינטרנט לצפייה נוחה ב-QR דרך הדפדפן (/qr)
+// נתיב אינטרנט לצפייה ב-QR דרך הדפדפן (/qr)
 app.get('/qr', (req, res) => {
     if (!latestQR) {
         return res.send(`
@@ -146,7 +157,7 @@ app.get('/qr', (req, res) => {
                 <div style="background: white; display: inline-block; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
                     <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="width: 300px; height: 300px;" />
                 </div>
-                <p style="margin-top: 20px; color: #666;">העמוד מתרענן אוטומטית כל 10 שניות כדי לספק קוד מעודכן.</p>
+                <p style="margin-top: 20px; color: #666;">העמוד מתרענן אוטומטית כל 10 שניות.</p>
                 <script>
                     setTimeout(() => { window.location.reload(); }, 10000);
                 </script>
