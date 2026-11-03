@@ -102,7 +102,8 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
-        markOnlineOnConnect: true
+        markOnlineOnConnect: true,
+        syncFullHistory: false // מונע מוואטסאפ לסנכרן את כל ההיסטוריה מחדש וחוסך התנגשויות התראות
     });
 
     // שלב 2: גיבוי אוטומטי מיידי בכל פעם שמפתחות ההצפנה מתעדכנים
