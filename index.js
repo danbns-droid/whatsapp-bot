@@ -18,6 +18,24 @@ const AUTH_DIR = './auth_info_baileys';
 let sock;
 let latestQR = null;
 
+// ==========================================
+// מנגנון לוגים עבור הדשבורד החיצוני
+// ==========================================
+const sentMessagesLog = [];
+const MAX_LOGS = 50;
+
+function logOutgoingMessage(to, text) {
+    sentMessagesLog.unshift({
+        timestamp: new Date().toISOString(),
+        to: typeof to === 'string' ? to.replace('@s.whatsapp.net', '') : to,
+        text: typeof text === 'string' ? text : JSON.stringify(text)
+    });
+    if (sentMessagesLog.length > MAX_LOGS) {
+        sentMessagesLog.pop();
+    }
+}
+// ==========================================
+
 // פונקציה חכמה שמשחזרת את *כל* קבצי הסשן מתיקיית הגיבוי ב-Firebase לדיסק המקומי לפני ההתחברות
 async function restoreSessionFromFirebase() {
     return new Promise((resolve) => {
@@ -60,7 +78,6 @@ async function backupSessionToFirebase() {
         let sessionData = {};
         for (let file of files) {
             const filePath = path.join(AUTH_DIR, file);
-            // לוודא שזה קובץ ולא תיקייה פנימית
             if (fs.statSync(filePath).isFile()) {
                 sessionData[file] = fs.readFileSync(filePath, 'utf8');
             }
@@ -93,7 +110,6 @@ async function backupSessionToFirebase() {
 }
 
 async function connectToWhatsApp() {
-    // שלב 1: שחזור הסשן מ-Firebase לפני טעינת המפתחות
     await restoreSessionFromFirebase();
     
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -103,10 +119,9 @@ async function connectToWhatsApp() {
         printQRInTerminal: false,
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
         markOnlineOnConnect: true,
-        syncFullHistory: false // מונע מוואטסאפ לסנכרן את כל ההיסטוריה מחדש וחוסך התנגשויות התראות
+        syncFullHistory: false
     });
 
-    // שלב 2: גיבוי אוטומטי מיידי בכל פעם שמפתחות ההצפנה מתעדכנים
     sock.ev.on('creds.update', async () => {
         await saveCreds();
         await backupSessionToFirebase();
@@ -123,7 +138,6 @@ async function connectToWhatsApp() {
         if (connection === 'open') {
             console.log('WhatsApp connected successfully! 🚀');
             latestQR = null;
-            // גיבוי יזום גם ברגע שהחיבור נפתח בהצלחה
             backupSessionToFirebase();
         } else if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -134,6 +148,23 @@ async function connectToWhatsApp() {
         }
     });
 }
+
+// ==========================================
+// נתיב API עבור הדשבורד החיצוני (/api/status)
+// ==========================================
+app.get('/api/status', (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+
+    const isConnected = Boolean(sock && sock.user && !sock.ws?.isClosed);
+
+    res.json({
+        status: isConnected ? 'online' : 'offline',
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString(),
+        logs: sentMessagesLog
+    });
+});
 
 // נתיב אינטרנט לצפייה ב-QR דרך הדפדפן (/qr)
 app.get('/qr', (req, res) => {
@@ -206,7 +237,10 @@ app.post('/send-appointment', async (req, res) => {
 
     try {
         await sock.sendMessage(clientJid, { text: clientMessage });
+        logOutgoingMessage(clientJid, clientMessage); // תיעוד הודעת הלקוח לדשבורד
+
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        logOutgoingMessage(STUDIO_PHONE, studioMessage); // תיעוד הודעת הסטודיו לדשבורד
         
         console.log(`✅ Appointment notification successfully sent to client (${formattedPhone}) and studio.`);
 
@@ -231,6 +265,7 @@ app.post('/send-inquiry', async (req, res) => {
 
     try {
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        logOutgoingMessage(STUDIO_PHONE, studioMessage); // תיעוד הפנייה לדשבורד
         
         console.log(`✅ New website inquiry successfully sent to studio from: ${name} (${phone})`);
 
