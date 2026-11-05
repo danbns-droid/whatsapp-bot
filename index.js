@@ -2,9 +2,10 @@ import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeys
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
-import https from 'https';
 import fs from 'fs';
 import path from 'path';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 
 const app = express();
 app.use(cors());
@@ -12,8 +13,17 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ של הסטודיו
-const FIREBASE_DB_URL = "https://yulas-studio-default-rtdb.firebaseio.com";
 const AUTH_DIR = './auth_info_baileys';
+
+// הגדרת Firebase (משתמש באותם נתונים של פרויקט ה-RTDB שלך)
+const firebaseConfig = {
+    projectId: "yulas-studio", // או מזהה הפרויקט שלך מתוך Firebase Console
+    databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+};
+
+// אתחול Firebase Firestore
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 let sock;
 let latestQR = null;
@@ -36,81 +46,64 @@ function logOutgoingMessage(to, text) {
 }
 // ==========================================
 
-// פונקציה חכמה שמשחזרת את *כל* קבצי הסשן מתיקיית הגיבוי ב-Firebase לדיסק המקומי לפני ההתחברות
-async function restoreSessionFromFirebase() {
-    return new Promise((resolve) => {
-        https.get(`${FIREBASE_DB_URL}/baileys_session.json`, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    const sessionData = JSON.parse(data);
-                    if (sessionData && Object.keys(sessionData).length > 0) {
-                        if (!fs.existsSync(AUTH_DIR)) {
-                            fs.mkdirSync(AUTH_DIR, { recursive: true });
-                        }
-                        for (let fileName in sessionData) {
-                            fs.writeFileSync(path.join(AUTH_DIR, fileName), sessionData[fileName]);
-                        }
-                        console.log("✅ Session successfully restored from Firebase!");
-                    } else {
-                        console.log("ℹ️ No valid session found in Firebase.");
-                    }
-                } catch (e) {
-                    console.log("ℹ️ No remote session found or parse error.");
-                }
-                resolve();
-            });
-        }).on('error', (err) => {
-            console.error("❌ Failed to restore session from Firebase:", err.message);
-            resolve();
+// פונקציה חכמה שמשחזרת את קבצי הסשן מ-Firestore לתיקייה המקומית לפני ההתחברות
+async function restoreSessionFromFirestore() {
+    try {
+        const querySnapshot = await getDocs(collection(db, "whatsapp_sessions"));
+        if (querySnapshot.empty) {
+            console.log("ℹ️ No session found in Firestore.");
+            return;
+        }
+
+        if (!fs.existsSync(AUTH_DIR)) {
+            fs.mkdirSync(AUTH_DIR, { recursive: true });
+        }
+
+        let restoredCount = 0;
+        querySnapshot.forEach((docSnap) => {
+            const fileName = docSnap.id;
+            const fileData = docSnap.data().content;
+            if (fileName && fileData) {
+                fs.writeFileSync(path.join(AUTH_DIR, fileName), fileData);
+                restoredCount++;
+            }
         });
-    });
+
+        if (restoredCount > 0) {
+            console.log(`✅ Successfully restored ${restoredCount} session files from Firestore!`);
+        }
+    } catch (error) {
+        console.error("❌ Failed to restore session from Firestore:", error.message);
+    }
 }
 
-// פונקציה שמגבה את כל הקבצים בתיקיית הסשן המקומית ל-Firebase בצורה מלאה
-async function backupSessionToFirebase() {
+// פונקציה שמגבה כל קובץ סשן בנפרד ובצורה אטומית ל-Firestore
+async function backupSessionToFirestore() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
         const files = fs.readdirSync(AUTH_DIR);
         if (files.length === 0) return;
 
-        let sessionData = {};
         for (let file of files) {
             const filePath = path.join(AUTH_DIR, file);
             if (fs.statSync(filePath).isFile()) {
-                sessionData[file] = fs.readFileSync(filePath, 'utf8');
+                const fileContent = fs.readFileSync(filePath, 'utf8');
+                // שמירת כל קובץ כמסמך נפרד ב-Firestore תחת השם שלו
+                await setDoc(doc(db, "whatsapp_sessions", file), {
+                    content: fileContent,
+                    updatedAt: new Date().toISOString()
+                });
             }
         }
-
-        const dataString = JSON.stringify(sessionData);
-        const url = new URL(`${FIREBASE_DB_URL}/baileys_session.json`);
-
-        const reqOptions = {
-            hostname: url.hostname,
-            path: url.pathname,
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(dataString)
-            }
-        };
-
-        const req = https.request(reqOptions, (res) => {
-            if (res.statusCode === 200) {
-                // שקט כדי לא להציף את הלוגים כל רגע
-            }
-        });
-        req.on('error', (e) => console.error("❌ Backup error:", e.message));
-        req.write(dataString);
-        req.end();
+        // שקט כדי לא להציף לוגים מיותרים
     } catch (error) {
-        console.error("❌ Failed to backup session to Firebase:", error.message);
+        console.error("❌ Failed to backup session to Firestore:", error.message);
     }
 }
 
 async function connectToWhatsApp() {
-    await restoreSessionFromFirebase();
+    // שלב 1: שחזור מ-Firestore
+    await restoreSessionFromFirestore();
     
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
@@ -124,7 +117,7 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        await backupSessionToFirebase();
+        await backupSessionToFirestore();
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -138,7 +131,7 @@ async function connectToWhatsApp() {
         if (connection === 'open') {
             console.log('WhatsApp connected successfully! 🚀');
             latestQR = null;
-            backupSessionToFirebase();
+            backupSessionToFirestore();
         } else if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);
@@ -237,10 +230,10 @@ app.post('/send-appointment', async (req, res) => {
 
     try {
         await sock.sendMessage(clientJid, { text: clientMessage });
-        logOutgoingMessage(clientJid, clientMessage); // תיעוד הודעת הלקוח לדשבורד
+        logOutgoingMessage(clientJid, clientMessage);
 
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
-        logOutgoingMessage(STUDIO_PHONE, studioMessage); // תיעוד הודעת הסטודיו לדשבורד
+        logOutgoingMessage(STUDIO_PHONE, studioMessage);
         
         console.log(`✅ Appointment notification successfully sent to client (${formattedPhone}) and studio.`);
 
@@ -265,7 +258,7 @@ app.post('/send-inquiry', async (req, res) => {
 
     try {
         await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
-        logOutgoingMessage(STUDIO_PHONE, studioMessage); // תיעוד הפנייה לדשבורד
+        logOutgoingMessage(STUDIO_PHONE, studioMessage);
         
         console.log(`✅ New website inquiry successfully sent to studio from: ${name} (${phone})`);
 
