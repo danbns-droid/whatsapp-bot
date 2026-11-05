@@ -111,7 +111,7 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
-        markOnlineOnConnect: true,
+        markOnlineOnConnect: false, // שינוי ל-false כדי שהטלפון יישאר המכשיר המרכזי ש"מקבל" את ההתראות
         syncFullHistory: false
     });
 
