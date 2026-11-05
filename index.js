@@ -15,9 +15,9 @@ const server = http.createServer(app);
 const STUDIO_PHONE = '972504886580@s.whatsapp.net'; // מספר הוואטסאפ של הסטודיו
 const AUTH_DIR = './auth_info_baileys';
 
-// הגדרת Firebase (משתמש באותם נתונים של פרויקט ה-RTDB שלך)
+// הגדרת Firebase
 const firebaseConfig = {
-    projectId: "yulas-studio", // או מזהה הפרויקט שלך מתוך Firebase Console
+    projectId: "yulas-studio",
     databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
 };
 
@@ -25,8 +25,9 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
-let sock;
+let sock = null;
 let latestQR = null;
+let isConnecting = false; // מנגנון מניעה להתחברות כפולה במקביל
 
 // ==========================================
 // מנגנון לוגים עבור הדשבורד החיצוני
@@ -88,58 +89,83 @@ async function backupSessionToFirestore() {
             const filePath = path.join(AUTH_DIR, file);
             if (fs.statSync(filePath).isFile()) {
                 const fileContent = fs.readFileSync(filePath, 'utf8');
-                // שמירת כל קובץ כמסמך נפרד ב-Firestore תחת השם שלו
                 await setDoc(doc(db, "whatsapp_sessions", file), {
                     content: fileContent,
                     updatedAt: new Date().toISOString()
                 });
             }
         }
-        // שקט כדי לא להציף לוגים מיותרים
     } catch (error) {
         console.error("❌ Failed to backup session to Firestore:", error.message);
     }
 }
 
 async function connectToWhatsApp() {
-    // שלב 1: שחזור מ-Firestore
-    await restoreSessionFromFirestore();
-    
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    // מניעת הפעלה במקביל אם כבר מתבצעת התחברות
+    if (isConnecting) return;
+    isConnecting = true;
 
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
-        markOnlineOnConnect: false, // שינוי ל-false כדי שהטלפון יישאר המכשיר המרכזי ש"מקבל" את ההתראות
-        syncFullHistory: false
-    });
-
-    sock.ev.on('creds.update', async () => {
-        await saveCreds();
-        await backupSessionToFirestore();
-    });
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            latestQR = qr;
-            console.log('📱 New QR code generated. View it at your server URL /qr');
+    try {
+        // אם כבר קיים סוקט פתוח, ננסה לסגור אותו נקי לפני פתיחת חדש
+        if (sock) {
+            try {
+                sock.ev.removeAllListeners('connection.update');
+                sock.ev.removeAllListeners('creds.update');
+                sock.ws.close();
+            } catch (e) {}
+            sock = null;
         }
 
-        if (connection === 'open') {
-            console.log('WhatsApp connected successfully! 🚀');
-            latestQR = null;
-            backupSessionToFirestore();
-        } else if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
-            if (shouldReconnect) {
-                connectToWhatsApp();
+        // שלב 1: שחזור מ-Firestore
+        await restoreSessionFromFirestore();
+        
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
+            markOnlineOnConnect: false,
+            syncFullHistory: false
+        });
+
+        sock.ev.on('creds.update', async () => {
+            await saveCreds();
+            await backupSessionToFirestore();
+        });
+
+        sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                latestQR = qr;
+                console.log('📱 New QR code generated. View it at your server URL /qr');
             }
-        }
-    });
+
+            if (connection === 'open') {
+                isConnecting = false; // איפוס הדגל כי ההתחברות הצליחה
+                console.log('WhatsApp connected successfully! 🚀');
+                latestQR = null;
+                backupSessionToFirestore();
+            } else if (connection === 'close') {
+                isConnecting = false;
+                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                console.log('Connection closed. Reconnecting:', shouldReconnect);
+                if (shouldReconnect) {
+                    // השהייה של 3 שניות למניעת התנגשויות בלולאה
+                    setTimeout(() => {
+                        connectToWhatsApp();
+                    }, 3000);
+                }
+            }
+        });
+    } catch (error) {
+        isConnecting = false;
+        console.error('❌ Error in connectToWhatsApp:', error);
+        setTimeout(() => {
+            connectToWhatsApp();
+        }, 5000);
+    }
 }
 
 // ==========================================
