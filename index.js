@@ -47,12 +47,22 @@ function logOutgoingMessage(to, text) {
 }
 // ==========================================
 
-// פונקציה חכמה שמשחזרת את קבצי הסשן מ-Firestore לתיקייה המקומית לפני ההתחברות
+// פונקציה משופרת שמשחזרת את כל הסשן ממסמך יחיד ב-Firestore (חוסך מכסה)
 async function restoreSessionFromFirestore() {
     try {
-        const querySnapshot = await getDocs(collection(db, "whatsapp_sessions"));
-        if (querySnapshot.empty) {
+        const docRef = doc(db, "whatsapp_sessions", "main_session");
+        const docSnap = await getDoc(docRef);
+        
+        if (!docSnap.exists()) {
             console.log("ℹ️ No session found in Firestore.");
+            return;
+        }
+
+        const sessionFiles = docSnap.data().files || {};
+        const fileNames = Object.keys(sessionFiles);
+
+        if (fileNames.length === 0) {
+            console.log("ℹ️ Session data in Firestore is empty.");
             return;
         }
 
@@ -60,41 +70,36 @@ async function restoreSessionFromFirestore() {
             fs.mkdirSync(AUTH_DIR, { recursive: true });
         }
 
-        let restoredCount = 0;
-        querySnapshot.forEach((docSnap) => {
-            const fileName = docSnap.id;
-            const fileData = docSnap.data().content;
-            if (fileName && fileData) {
-                fs.writeFileSync(path.join(AUTH_DIR, fileName), fileData);
-                restoredCount++;
-            }
-        });
-
-        if (restoredCount > 0) {
-            console.log(`✅ Successfully restored ${restoredCount} session files from Firestore!`);
+        for (let fileName of fileNames) {
+            fs.writeFileSync(path.join(AUTH_DIR, fileName), sessionFiles[fileName]);
         }
+
+        console.log(`✅ Successfully restored ${fileNames.length} session files from Firestore (Single Document)!`);
     } catch (error) {
         console.error("❌ Failed to restore session from Firestore:", error.message);
     }
 }
 
-// פונקציה שמגבה כל קובץ סשן בנפרד ובצורה אטומית ל-Firestore
+// פונקציה משופרת שמגבה את כל תיקיית הסשן כמסמך יחיד ואטומי ב-Firestore
 async function backupSessionToFirestore() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
         const files = fs.readdirSync(AUTH_DIR);
         if (files.length === 0) return;
 
+        const sessionFiles = {};
         for (let file of files) {
             const filePath = path.join(AUTH_DIR, file);
             if (fs.statSync(filePath).isFile()) {
-                const fileContent = fs.readFileSync(filePath, 'utf8');
-                await setDoc(doc(db, "whatsapp_sessions", file), {
-                    content: fileContent,
-                    updatedAt: new Date().toISOString()
-                });
+                sessionFiles[file] = fs.readFileSync(filePath, 'utf8');
             }
         }
+
+        // שמירה במסמך יחיד במקום מאות מסמכים נפרדים (חוסך 99% מהכתיבות)
+        await setDoc(doc(db, "whatsapp_sessions", "main_session"), {
+            files: sessionFiles,
+            updatedAt: new Date().toISOString()
+        });
     } catch (error) {
         console.error("❌ Failed to backup session to Firestore:", error.message);
     }
@@ -275,7 +280,7 @@ app.post('/send-inquiry', async (req, res) => {
         return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
     }
 
-    const { phone, name, description } = req.body;
+    The { phone, name, description } = req.body;
 
     let studioMessage = `✉️ *פנייה חדשה התקבלה מהאתר!* ✉️\n\n` +
                         `👤 שם: ${name}\n` +
