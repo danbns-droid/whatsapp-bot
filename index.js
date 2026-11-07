@@ -280,7 +280,7 @@ app.post('/send-inquiry', async (req, res) => {
         return res.status(500).json({ success: false, error: 'הבוט עדיין מתחבר לוואטסאפ, נסה שוב בעוד רגע' });
     }
 
-     { phone, name, description } = req.body;
+    const { phone, name, description } = req.body;
 
     let studioMessage = `✉️ *פנייה חדשה התקבלה מהאתר!* ✉️\n\n` +
                         `👤 שם: ${name}\n` +
