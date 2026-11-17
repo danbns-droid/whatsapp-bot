@@ -1,4 +1,4 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } from '@whiskeysockets/baileys';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -240,9 +240,12 @@ async function connectToWhatsApp() {
         sock = makeWASocket({
             auth: state,
             printQRInTerminal: false,
-            browser: ["Yulas Studio Bot", "Chrome", "10.0.0"],
+            browser: Browsers.ubuntu('Chrome'),
             markOnlineOnConnect: false,
-            syncFullHistory: false
+            syncFullHistory: false,
+            keepAliveIntervalMs: 30000,
+            retryRequestDelayMs: 250,
+            connectTimeoutMs: 60000
         });
 
         sock.ev.on('creds.update', async () => {
