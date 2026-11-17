@@ -4,8 +4,10 @@ import cors from 'cors';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import { getDatabase, ref, get, set } from 'firebase/database';
 
 const app = express();
 app.use(cors());
@@ -17,17 +19,24 @@ const AUTH_DIR = './auth_info_baileys';
 
 // הגדרת Firebase
 const firebaseConfig = {
+    apiKey: "AIzaSyDjPBynU-kEAZhXb2yIXiExlGB81p6QN6U",
+    authDomain: "yulas-studio.firebaseapp.com",
+    databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com",
     projectId: "yulas-studio",
-    databaseURL: "https://yulas-studio-default-rtdb.firebaseio.com"
+    storageBucket: "yulas-studio.firebasestorage.app",
+    messagingSenderId: "97526172718",
+    appId: "1:97526172718:web:ddfe735cb30f501c3663bf"
 };
 
-// אתחול Firebase Firestore
+// אתחול Firebase
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const rtdb = getDatabase(firebaseApp);
 
 let sock = null;
 let latestQR = null;
-let isConnecting = false; // מנגנון מניעה להתחברות כפולה במקביל
+let isConnecting = false;
+let backupTimeout = null;
 
 // ==========================================
 // מנגנון לוגים עבור הדשבורד החיצוני
@@ -47,7 +56,7 @@ function logOutgoingMessage(to, text) {
 }
 // ==========================================
 
-// פונקציה משופרת שמשחזרת את כל הסשן ממסמך יחיד ב-Firestore (חוסך מכסה)
+// שחזור סשן דחוס מ-Firestore
 async function restoreSessionFromFirestore() {
     try {
         const docRef = doc(db, "whatsapp_sessions", "main_session");
@@ -58,29 +67,43 @@ async function restoreSessionFromFirestore() {
             return;
         }
 
-        const sessionFiles = docSnap.data().files || {};
-        const fileNames = Object.keys(sessionFiles);
+        const data = docSnap.data();
+        let sessionFiles = {};
 
-        if (fileNames.length === 0) {
-            console.log("ℹ️ Session data in Firestore is empty.");
-            return;
+        if (data.compressedData) {
+            const buffer = Buffer.from(data.compressedData, 'base64');
+            const decompressed = zlib.gunzipSync(buffer).toString('utf8');
+            sessionFiles = JSON.parse(decompressed);
+        } else if (data.files) {
+            sessionFiles = data.files;
         }
+
+        const fileNames = Object.keys(sessionFiles);
+        if (fileNames.length === 0) return;
 
         if (!fs.existsSync(AUTH_DIR)) {
             fs.mkdirSync(AUTH_DIR, { recursive: true });
         }
 
-        for (let fileName of fileNames) {
+        for (const fileName of fileNames) {
             fs.writeFileSync(path.join(AUTH_DIR, fileName), sessionFiles[fileName]);
         }
 
-        console.log(`✅ Successfully restored ${fileNames.length} session files from Firestore (Single Document)!`);
+        console.log(`✅ Successfully restored ${fileNames.length} session files from Firestore (Compressed)!`);
     } catch (error) {
         console.error("❌ Failed to restore session from Firestore:", error.message);
     }
 }
 
-// פונקציה משופרת שמגבה את כל תיקיית הסשן כמסמך יחיד ואטומי ב-Firestore
+// איחוד כתיבות לסשן
+function triggerDebouncedBackup() {
+    if (backupTimeout) clearTimeout(backupTimeout);
+    backupTimeout = setTimeout(() => {
+        backupSessionToFirestore();
+    }, 2000);
+}
+
+// גיבוי דחוס ב-Gzip למסמך יחיד ב-Firestore
 async function backupSessionToFirestore() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
@@ -88,16 +111,19 @@ async function backupSessionToFirestore() {
         if (files.length === 0) return;
 
         const sessionFiles = {};
-        for (let file of files) {
+        for (const file of files) {
             const filePath = path.join(AUTH_DIR, file);
             if (fs.statSync(filePath).isFile()) {
                 sessionFiles[file] = fs.readFileSync(filePath, 'utf8');
             }
         }
 
-        // שמירה במסמך יחיד במקום מאות מסמכים נפרדים (חוסך 99% מהכתיבות)
+        const jsonString = JSON.stringify(sessionFiles);
+        const compressedBase64 = zlib.gzipSync(jsonString).toString('base64');
+
         await setDoc(doc(db, "whatsapp_sessions", "main_session"), {
-            files: sessionFiles,
+            compressedData: compressedBase64,
+            fileCount: files.length,
             updatedAt: new Date().toISOString()
         });
     } catch (error) {
@@ -105,13 +131,99 @@ async function backupSessionToFirestore() {
     }
 }
 
+// ==========================================
+// מנגנון תזכורות אוטומטיות (08:00 - 09:00 בבוקר)
+// ==========================================
+function formatDateToShort(dateString) {
+    const parts = dateString.split('-'); 
+    return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : dateString;
+}
+
+async function checkAndSendReminders() {
+    if (!sock || !sock.user || sock.ws?.isClosed) return;
+
+    try {
+        // קבלת הזמן הנוכחי המדויק לפי שעון ישראל
+        const now = new Date();
+        const israelTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Jerusalem" });
+        const israelDate = new Date(israelTimeStr);
+        const hours = israelDate.getHours();
+
+        // רץ אך ורק בין השעות 08:00 ל-09:00 בבוקר
+        if (hours !== 8) return;
+
+        // חישוב תאריך מחר (YYYY-MM-DD) לפי שעון ישראל
+        const tomorrow = new Date(israelDate);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+        // שליפת התורים מ-Firebase Realtime Database
+        const appointmentsRef = ref(rtdb, 'yulas_data/appointments');
+        const snapshot = await get(appointmentsRef);
+        
+        if (!snapshot.exists()) return;
+        const appointments = snapshot.val();
+
+        if (!Array.isArray(appointments)) return;
+
+        let updated = false;
+
+        for (let i = 0; i < appointments.length; i++) {
+            const app = appointments[i];
+            
+            // תנאים לשליחת תזכורת:
+            // 1. התור הוא למחר
+            // 2. טרם נשלחה לו תזכורת בעבר (!app.reminderSent)
+            // 3. יש לו תאריך ושעה תקינים
+            if (app && app.date === tomorrowStr && !app.reminderSent && app.time) {
+                
+                // יצירת אובייקט תאריך ושעה מדויק של הפגישה עצמה
+                const appDateTime = new Date(`${app.date}T${app.time}:00`);
+                // חישוב הזמן שנותר עד לפגישה בשעות
+                const diffHours = (appDateTime - now) / (1000 * 60 * 60);
+
+                // דרישה: אם הזמן לפגישה קטן מ-24 שעות, אין לשלוח תזכורת
+                if (diffHours >= 24) {
+                    let phone = app.phone.replace(/\D/g, '');
+                    if (phone.startsWith('0')) {
+                        phone = '972' + phone.substring(1);
+                    }
+                    const clientJid = phone + '@s.whatsapp.net';
+
+                    const reminderText = `שלום ${app.clientName || 'לקוחה יקרה'}, מזכירים לך באהבה על התור שלך מחר (${formatDateToShort(app.date)}) בשעה ${app.time} לשירות ${app.serviceName || 'בסטודיו'}.\n📍 כתובת: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה).\nמחכים לך! Yulas Studio ✨`;
+
+                    await sock.sendMessage(clientJid, { text: reminderText });
+                    logOutgoingMessage(clientJid, reminderText);
+                    console.log(`✅ Reminder successfully sent to client: ${app.clientName} (${phone}) for tomorrow (${tomorrowStr}).`);
+
+                    // סימון שהתזכורת נשלחה כדי להימנע משליחה כפולה
+                    appointments[i].reminderSent = true;
+                    updated = true;
+                } else {
+                    console.log(`⏳ Skipped reminder for ${app.clientName}: Appointment is in less than 24 hours (${diffHours.toFixed(1)} hours left).`);
+                }
+            }
+        }
+
+        // עדכון הרשימה ב-Firebase במידה ונשלחו תזכורות חדשות
+        if (updated) {
+            await set(ref(rtdb, 'yulas_data/appointments'), appointments);
+        }
+
+    } catch (error) {
+        console.error("❌ Error in checkAndSendReminders:", error.message);
+    }
+}
+
+// הפעלת בדיקה כל 10 דקות ברקע
+setInterval(checkAndSendReminders, 10 * 60 * 1000);
+// ==========================================
+
 async function connectToWhatsApp() {
-    // מניעת הפעלה במקביל אם כבר מתבצעת התחברות
     if (isConnecting) return;
     isConnecting = true;
 
     try {
-        // אם כבר קיים סוקט פתוח, ננסה לסגור אותו נקי לפני פתיחת חדש
         if (sock) {
             try {
                 sock.ev.removeAllListeners('connection.update');
@@ -121,7 +233,6 @@ async function connectToWhatsApp() {
             sock = null;
         }
 
-        // שלב 1: שחזור מ-Firestore
         await restoreSessionFromFirestore();
         
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -136,7 +247,7 @@ async function connectToWhatsApp() {
 
         sock.ev.on('creds.update', async () => {
             await saveCreds();
-            await backupSessionToFirestore();
+            triggerDebouncedBackup();
         });
 
         sock.ev.on('connection.update', (update) => {
@@ -148,16 +259,15 @@ async function connectToWhatsApp() {
             }
 
             if (connection === 'open') {
-                isConnecting = false; // איפוס הדגל כי ההתחברות הצליחה
+                isConnecting = false;
                 console.log('WhatsApp connected successfully! 🚀');
                 latestQR = null;
-                backupSessionToFirestore();
+                triggerDebouncedBackup();
             } else if (connection === 'close') {
                 isConnecting = false;
                 const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
                 console.log('Connection closed. Reconnecting:', shouldReconnect);
                 if (shouldReconnect) {
-                    // השהייה של 3 שניות למניעת התנגשויות בלולאה
                     setTimeout(() => {
                         connectToWhatsApp();
                     }, 3000);
@@ -174,7 +284,7 @@ async function connectToWhatsApp() {
 }
 
 // ==========================================
-// נתיב API עבור הדשבורד החיצוני (/api/status)
+// נתיבי API
 // ==========================================
 app.get('/api/status', (req, res) => {
     res.header('Access-Control-Allow-Origin', '*');
@@ -190,7 +300,6 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// נתיב אינטרנט לצפייה ב-QR דרך הדפדפן (/qr)
 app.get('/qr', (req, res) => {
     if (!latestQR) {
         return res.send(`
