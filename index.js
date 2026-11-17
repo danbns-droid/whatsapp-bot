@@ -39,6 +39,31 @@ let isConnecting = false;
 let backupTimeout = null;
 
 // ==========================================
+// מנגנון מטמון למניעת "בהמתנה להודעה זו" (Retry & Store)
+// ==========================================
+const retryCacheMap = new Map();
+const msgRetryCounterCache = {
+    get: (key) => retryCacheMap.get(key),
+    set: (key, value) => retryCacheMap.set(key, value),
+    del: (key) => retryCacheMap.delete(key),
+    flushAll: () => retryCacheMap.clear()
+};
+
+// שמירת הודעות שנשלחו בזיכרון כדי לאפשר הצפנה מחדש במקרה של בקשת Retry מהלקוח
+const sentMessageStore = new Map();
+const MAX_STORED_MESSAGES = 200;
+
+function saveMessageToStore(msgObj, textContent) {
+    if (msgObj?.key?.id) {
+        sentMessageStore.set(msgObj.key.id, { conversation: textContent });
+        if (sentMessageStore.size > MAX_STORED_MESSAGES) {
+            const firstKey = sentMessageStore.keys().next().value;
+            sentMessageStore.delete(firstKey);
+        }
+    }
+}
+
+// ==========================================
 // מנגנון לוגים עבור הדשבורד החיצוני
 // ==========================================
 const sentMessagesLog = [];
@@ -143,7 +168,6 @@ async function checkAndSendReminders() {
     if (!sock || !sock.user || sock.ws?.isClosed) return;
 
     try {
-        // קבלת הזמן הנוכחי המדויק לפי שעון ישראל
         const now = new Date();
         const israelTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Jerusalem" });
         const israelDate = new Date(israelTimeStr);
@@ -157,7 +181,6 @@ async function checkAndSendReminders() {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-        // שליפת התורים מ-Firebase Realtime Database
         const appointmentsRef = ref(rtdb, 'yulas_data/appointments');
         const snapshot = await get(appointmentsRef);
         
@@ -171,18 +194,11 @@ async function checkAndSendReminders() {
         for (let i = 0; i < appointments.length; i++) {
             const app = appointments[i];
             
-            // תנאים לשליחת תזכורת:
-            // 1. התור הוא למחר
-            // 2. טרם נשלחה לו תזכורת בעבר (!app.reminderSent)
-            // 3. יש לו תאריך ושעה תקינים
             if (app && app.date === tomorrowStr && !app.reminderSent && app.time) {
-                
-                // יצירת אובייקט תאריך ושעה מדויק של הפגישה עצמה
                 const appDateTime = new Date(`${app.date}T${app.time}:00`);
-                // חישוב הזמן שנותר עד לפגישה בשעות
                 const diffHours = (appDateTime - now) / (1000 * 60 * 60);
 
-                // דרישה: אם הזמן לפגישה קטן מ-24 שעות, אין לשלוח תזכורת
+                // שליחה אך ורק אם הזמן לפגישה הוא 24 שעות ומעלה
                 if (diffHours >= 24) {
                     let phone = app.phone.replace(/\D/g, '');
                     if (phone.startsWith('0')) {
@@ -192,11 +208,11 @@ async function checkAndSendReminders() {
 
                     const reminderText = `שלום ${app.clientName || 'לקוחה יקרה'}, מזכירים לך באהבה על התור שלך מחר (${formatDateToShort(app.date)}) בשעה ${app.time} לשירות ${app.serviceName || 'בסטודיו'}.\n📍 כתובת: רחוב החצב 40, זכרון יעקב (מימין בגינה העליונה).\nמחכים לך! Yulas Studio ✨`;
 
-                    await sock.sendMessage(clientJid, { text: reminderText });
+                    const sentMsg = await sock.sendMessage(clientJid, { text: reminderText });
+                    saveMessageToStore(sentMsg, reminderText);
                     logOutgoingMessage(clientJid, reminderText);
                     console.log(`✅ Reminder successfully sent to client: ${app.clientName} (${phone}) for tomorrow (${tomorrowStr}).`);
 
-                    // סימון שהתזכורת נשלחה כדי להימנע משליחה כפולה
                     appointments[i].reminderSent = true;
                     updated = true;
                 } else {
@@ -205,7 +221,6 @@ async function checkAndSendReminders() {
             }
         }
 
-        // עדכון הרשימה ב-Firebase במידה ונשלחו תזכורות חדשות
         if (updated) {
             await set(ref(rtdb, 'yulas_data/appointments'), appointments);
         }
@@ -215,7 +230,6 @@ async function checkAndSendReminders() {
     }
 }
 
-// הפעלת בדיקה כל 10 דקות ברקע
 setInterval(checkAndSendReminders, 10 * 60 * 1000);
 // ==========================================
 
@@ -245,7 +259,11 @@ async function connectToWhatsApp() {
             syncFullHistory: false,
             keepAliveIntervalMs: 30000,
             retryRequestDelayMs: 250,
-            connectTimeoutMs: 60000
+            connectTimeoutMs: 60000,
+            msgRetryCounterCache,
+            getMessage: async (key) => {
+                return sentMessageStore.get(key.id) || undefined;
+            }
         });
 
         sock.ev.on('creds.update', async () => {
@@ -372,10 +390,12 @@ app.post('/send-appointment', async (req, res) => {
                         (note ? `\n💬 הערה: ${note}` : '');
 
     try {
-        await sock.sendMessage(clientJid, { text: clientMessage });
+        const sentClientMsg = await sock.sendMessage(clientJid, { text: clientMessage });
+        saveMessageToStore(sentClientMsg, clientMessage);
         logOutgoingMessage(clientJid, clientMessage);
 
-        await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        const sentStudioMsg = await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        saveMessageToStore(sentStudioMsg, studioMessage);
         logOutgoingMessage(STUDIO_PHONE, studioMessage);
         
         console.log(`✅ Appointment notification successfully sent to client (${formattedPhone}) and studio.`);
@@ -400,7 +420,8 @@ app.post('/send-inquiry', async (req, res) => {
                         `💬 תוכן הפנייה:\n${description}`;
 
     try {
-        await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        const sentStudioMsg = await sock.sendMessage(STUDIO_PHONE, { text: studioMessage });
+        saveMessageToStore(sentStudioMsg, studioMessage);
         logOutgoingMessage(STUDIO_PHONE, studioMessage);
         
         console.log(`✅ New website inquiry successfully sent to studio from: ${name} (${phone})`);
